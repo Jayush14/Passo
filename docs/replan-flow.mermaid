@@ -1,0 +1,28 @@
+flowchart TD
+    Tracker(["Tracker view"]) --> Trigger["User taps 'Re-plan'\n(or app offers it after\nbehind-schedule detection)"]
+
+    Trigger --> Suggest["AI pre-computes a recommendation:\n'Based on your pace, I'd suggest\nextending ~2 weeks, everything\nelse stays the same'"]
+
+    Suggest --> QuickChoice{"User response"}
+    QuickChoice -->|Accept suggestion| Apply
+    QuickChoice -->|Customize| PathChoice{"Continue this plan or\nStart fresh (your current\nplan is saved, not deleted)?"}
+
+    PathChoice -->|Start fresh| Confirm["Confirm dialog"]
+    Confirm --> Archive["Archive current roadmap\n(read-only, preserved)"]
+    Archive --> NewOnboard(["Redirect to Onboarding"])
+
+    PathChoice -->|Continue this plan| DeadlineChoice{"Keep same deadline\nor extend timeline?"}
+
+    DeadlineChoice -->|Keep same deadline| CalcPace["Calculate required pace\nfor remaining tasks to hit\nexisting target_end_date"]
+    CalcPace --> RealismCheck{"Required pace exceeds\nhours_per_week by\n> ~30%?"}
+    RealismCheck -->|Yes| Warning["Warning screen:\n'You'd need ~X hrs/week vs\nyour Y hrs/week available'"]
+    Warning --> WarningChoice{"User decision"}
+    WarningChoice -->|Keep deadline anyway| Apply
+    WarningChoice -->|Extend timeline instead| CalcExtend
+    RealismCheck -->|No| Apply["Apply repaced_weeks\n(completed tasks untouched)"]
+
+    DeadlineChoice -->|Extend timeline| CalcExtend["Calculate new target_end_date\npreserving ~original pace"]
+    CalcExtend --> ConfirmExtend["Show new target_end_date\nfor confirmation"]
+    ConfirmExtend --> Apply
+
+    Apply --> Back(["Back to Tracker\nwith updated roadmap"])

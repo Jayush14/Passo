@@ -1,0 +1,59 @@
+flowchart TB
+    subgraph Client["React PWA (Browser / Home Screen App)"]
+        UI_Onboard["Onboarding\n(manual or resume upload)"]
+        UI_Tracker["Tracker\n(phases/weeks/tasks/subtasks)"]
+        UI_Chat["Mentor Chat"]
+        UI_Replan["Re-plan Flow"]
+        SW["Service Worker\n(offline cache + push)"]
+    end
+
+    subgraph Backend["Go Backend (REST API)"]
+        Auth["auth\nsignup/login/session"]
+        APIKeyMgr["apikey\nencrypt/decrypt, store"]
+        RoadmapSvc["roadmap\ngenerate / replan / archive"]
+        ProgressSvc["progress\ntask checks, notes"]
+        ChatSvc["chat\nmentor chat handler"]
+        Guardrail["chat guardrail\n+ rate limiter\n(scope + abuse protection)"]
+        NotifySvc["notify\npush subscriptions + send"]
+        AdminSvc["admin\naggregated dashboard queries"]
+        AIProxy["aiproxy\nAIProvider interface"]
+    end
+
+    subgraph KeyResolution["Key Resolution"]
+        direction LR
+        BYOK["User's own\nencrypted Gemini key"]
+        HouseKey["House-managed\nencrypted key\n(subscription tier)"]
+    end
+
+    DB[(PostgreSQL\nusers, roadmaps, progress,\nchat_messages, api_keys,\nanalytics_events, push_subscriptions)]
+
+    Gemini["Google Gemini API\ngenerateContent"]
+
+    UI_Onboard -->|resume upload or form| Auth
+    UI_Tracker --> ProgressSvc
+    UI_Chat --> Guardrail
+    Guardrail --> ChatSvc
+    UI_Replan --> RoadmapSvc
+    SW <-->|push events| NotifySvc
+
+    Auth --> DB
+    APIKeyMgr --> DB
+    RoadmapSvc --> DB
+    ProgressSvc --> DB
+    ChatSvc --> DB
+    NotifySvc --> DB
+    AdminSvc -->|aggregated queries only| DB
+
+    RoadmapSvc --> AIProxy
+    ChatSvc --> AIProxy
+    APIKeyMgr --> KeyResolution
+    KeyResolution --> AIProxy
+    AIProxy -->|forwards prompt + resolved key| Gemini
+    Gemini -->|response| AIProxy
+
+    classDef client fill:#1a2029,stroke:#5fd98a,color:#e7ecf3
+    classDef backend fill:#212836,stroke:#5fd98a,color:#e7ecf3
+    classDef external fill:#2a3241,stroke:#e3b341,color:#e7ecf3
+    class UI_Onboard,UI_Tracker,UI_Chat,UI_Replan,SW client
+    class Auth,APIKeyMgr,RoadmapSvc,ProgressSvc,ChatSvc,Guardrail,NotifySvc,AdminSvc,AIProxy backend
+    class Gemini,DB external

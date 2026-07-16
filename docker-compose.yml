@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: passo_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: passo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: passo_backend
+    env_file:
+      - ./backend/.env   # optional: create .env file
+    environment:
+      DB_URL: postgres://postgres:postgres@db:5432/passo?sslmode=disable
+      JWT_SECRET: newsupersecret
+      ENCRYPTION_KEY: RYG14COk/FwKbrIaL51mBkOsUL/N3V0Iq4nHzo0m53M=   # must be 32 bytes
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

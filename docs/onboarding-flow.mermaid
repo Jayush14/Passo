@@ -1,0 +1,30 @@
+flowchart TD
+    Start(["User signs up"]) --> Choose{"Choose onboarding path"}
+
+    Choose -->|Manual fill| ManualForm["Fill required fields:\nskills, target role,\nhours/week, timeframe"]
+    ManualForm --> OptFields["Optional fields:\ncompany/package, education,\ncerts, portfolio, interview history,\nlearning style, target domain,\n+ 'anything else' free text"]
+    OptFields --> NoKeyYet["No Gemini key needed yet"]
+
+    Choose -->|Resume upload| PickFile["User selects PDF/DOCX"]
+    PickFile --> ValidateFile{"Valid file type\n& readable?"}
+    ValidateFile -->|No| FileError["Show error,\nlet user re-select"]
+    FileError --> PickFile
+    ValidateFile -->|Yes| KeyAsk1["NOW ask for Gemini key,\nwith explanation:\n'To read this and extract your\nskills, you need a free key\n(30 sec) - here's how'"]
+    KeyAsk1 --> Extract["Gemini extracts skills,\nexperience, education,\ncerts, portfolio links"]
+    Extract --> Discard["Raw file discarded.\nContact PII discarded\neven if returned."]
+    Discard --> Review["Pre-filled review screen\n- user edits/confirms"]
+
+    NoKeyYet --> Merge["Merge into onboarding data model"]
+    Review --> Merge
+
+    Merge --> KeyCheck{"Was key already\nprovided (resume path)?"}
+    KeyCheck -->|No| KeyAsk2["Ask for Gemini key now"]
+    KeyCheck -->|Yes| Generate
+    KeyAsk2 --> Generate["POST /roadmap/generate"]
+
+    Generate --> Prompt["Roadmap generation prompt:\nrequired + optional inputs\n-> phased JSON roadmap"]
+    Prompt --> Validate{"Valid JSON\nmatching schema?"}
+    Validate -->|No| Retry["Retry with correction prompt"]
+    Retry --> Validate
+    Validate -->|Yes| Store["Store roadmap + resolved\nstart_date/target_end_date"]
+    Store --> Tracker(["Land on Tracker view"])

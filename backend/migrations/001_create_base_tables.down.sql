@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS analytics_events;
+DROP TABLE IF EXISTS nudge_schedule;
+DROP TABLE IF EXISTS push_subscriptions;
+DROP TABLE IF EXISTS chat_messages;
+DROP TABLE IF EXISTS progress;
+DROP TABLE IF EXISTS roadmaps;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS users;
