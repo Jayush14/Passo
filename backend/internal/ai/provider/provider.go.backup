@@ -1,0 +1,33 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"passo/backend/internal/ai/provider/contract"
+	"passo/backend/internal/ai/provider/gemini"
+	"passo/backend/internal/ai/provider/huggingface"
+	"passo/backend/internal/ai/provider/groq"
+	"passo/backend/internal/ai/provider/openai"
+	"passo/backend/internal/ai/provider/together"
+)
+
+// Factory returns a TextGenerator for the given provider name and API key.
+// Returns an error if the provider is unknown or the key is missing.
+func Factory(ctx context.Context, providerName, apiKey string) (contract.TextGenerator, error) {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "gemini":
+		return gemini.New(apiKey), nil
+	case "huggingface", "hf":
+		return huggingface.New(apiKey), nil
+	case "groq":
+		return groq.New(apiKey), nil
+	case "openai":
+		return openai.New(apiKey), nil
+	case "together", "togetherai":
+		return together.New(apiKey), nil
+	default:
+		return nil, fmt.Errorf("unsupported AI provider: %s", providerName)
+	}
+}

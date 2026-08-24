@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"strings"
 	"time"
+
+	"log"
 
 	_ "github.com/lib/pq"
 )
@@ -60,7 +63,7 @@ func (db *DB) SaveRefreshToken(ctx context.Context, userID int64, token string, 
 	_, err := db.ExecContext(
 		ctx,
 		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-		 VALUES ($1, $2, $3)`,
+				VALUES ($1, $2, $3)`,
 		userID, hashStr, expiresAt,
 	)
 	return err
@@ -76,7 +79,7 @@ func (db *DB) GetUserIDFromRefreshToken(ctx context.Context, token string) (int6
 	err := db.QueryRowContext(
 		ctx,
 		`SELECT user_id, expires_at FROM refresh_tokens
-		 WHERE token_hash = $1 AND expires_at > NOW()`,
+                 WHERE token_hash = $1 AND expires_at > NOW()`,
 		hashStr,
 	).Scan(&userID, &expiresAt)
 	if err == sql.ErrNoRows {
@@ -101,26 +104,69 @@ func (db *DB) DeleteRefreshToken(ctx context.Context, userID int64, token string
 	return err
 }
 
-// SaveAPIKey stores the encrypted API key for the user (upsert).
-func (db *DB) SaveAPIKey(ctx context.Context, userID int64, encryptedKey string) error {
+// SaveAPIKey stores the encrypted API key for a user+provider (upsert).
+func (db *DB) SaveAPIKey(ctx context.Context, userID int64, provider string, encryptedKey string) error {
+	// Normalise provider (lowercase, trim) to avoid duplicates like "Gemini" vs "gemini"
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "gemini" // keep existing behaviour for old calls
+	}
 	_, err := db.ExecContext(
 		ctx,
-		`INSERT INTO api_keys (user_id, encrypted_key, created_at)
-			 VALUES ($1, $2, NOW())
-			 ON CONFLICT (user_id) DO UPDATE SET
-			     encrypted_key = EXCLUDED.encrypted_key`,
-		userID, encryptedKey,
+		`
+		INSERT INTO api_keys (user_id, provider, encrypted_key, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (user_id, provider) DO UPDATE
+			SET encrypted_key = EXCLUDED.encrypted_key,
+				created_at    = NOW()
+		`,
+		userID, provider, encryptedKey,
 	)
 	return err
 }
 
-// GetAPIKey retrieves the encrypted API key for the user.
-func (db *DB) GetAPIKey(ctx context.Context, userID int64) (string, error) {
+// GetAPIKey retrieves the encrypted API key for a user+provider.
+// Returns sql.ErrNoRows if no row exists.
+func (db *DB) GetAPIKey(ctx context.Context, userID int64, provider string) (string, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "gemini"
+	}
 	var encryptedKey string
 	err := db.QueryRowContext(
 		ctx,
-		"SELECT encrypted_key FROM api_keys WHERE user_id = $1",
-		userID,
+		`SELECT encrypted_key FROM api_keys WHERE user_id = $1 AND provider = $2`,
+		userID, provider,
 	).Scan(&encryptedKey)
 	return encryptedKey, err // sql.ErrNoRows if not found
+}
+
+/* -------------------------------------------------------------------------
+   Legacy wrappers – keep existing callers that do not pass a provider
+   (they will keep using the Gemini key).  They can be removed later once
+   all callers are updated.
+   --------------------------------------------------------------------- */
+
+// SaveAPIKeyLegacy preserves the old API (provider = "gemini").
+func (db *DB) SaveAPIKeyLegacy(ctx context.Context, userID int64, encryptedKey string) error {
+	return db.SaveAPIKey(ctx, userID, "gemini", encryptedKey)
+}
+
+// GetAPIKeyLegacy preserves the old API (provider = "gemini").
+func (db *DB) GetAPIKeyLegacy(ctx context.Context, userID int64) (string, error) {
+	return db.GetAPIKey(ctx, userID, "gemini")
+}
+
+// SaveRoadmap stores the generated roadmap JSON for a user.
+func (db *DB) SaveRoadmap(ctx context.Context, userID int64, payload []byte) error {
+	log.Printf("[db] SaveRoadmap called for user %d, payload size %d", userID, len(payload))
+	_, err := db.ExecContext(
+		ctx,
+		`INSERT INTO roadmaps (user_id, payload, created_at) VALUES ($1, $2, NOW())`,
+		userID, payload,
+	)
+	if err != nil {
+		log.Printf("[db] SaveRoadmap error: %v", err)
+	}
+	return err
 }

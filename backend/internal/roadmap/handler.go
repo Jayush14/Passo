@@ -1,213 +1,496 @@
 package roadmap
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"strings"
+	"time"
 
-	"passo/backend/internal/config"
+	"database/sql"
+
+	"passo/backend/internal/ai/provider"
+	"passo/backend/internal/apikey"
+	"passo/backend/internal/db"
+	"passo/backend/internal/prompts"
+	"passo/backend/internal/roadmap/pipeline"
 )
-
-var cfg = config.LoadConfig()
 
 // GenerateRequest represents the request body for roadmap generation.
 type GenerateRequest struct {
-	CurrentSkills     []string `json:"current_skills"`
-	TargetRole        string   `json:"target_role"`
-	HoursPerWeek      int      `json:"hours_per_week"`
-	WeeklyTimePattern string   `json:"weekly_time_pattern,omitempty"`
-	Timeframe         string   `json:"timeframe,omitempty"` // e.g., "6 months"
-	// Optional personalization vectors (see spec)
-	CurrentCompany   string `json:"current_company,omitempty"`
-	CurrentPackage   string `json:"current_package,omitempty"`
-	ExpectedCompany  string `json:"expected_company,omitempty"`
-	ExpectedPackage  string `json:"expected_package,omitempty"`
-	Education        string `json:"education_background,omitempty"`
-	Certifications   []string `json:"certifications,omitempty"`
-	PortfolioURL     string `json:"portfolio_url,omitempty"`
-	InterviewExperience string `json:"interview_experience,omitempty"`
-	LearningStyle    string `json:"learning_style,omitempty"`
-	TargetDomain     string `json:"target_domain,omitempty"`
-	NetworkAccess    string `json:"network_access,omitempty"`
-	AdditionalNotes  string `json:"additional_notes,omitempty"`
+	CurrentSkills         []string `json:"current_skills"`
+	TargetRole            string   `json:"target_role"`
+	HoursPerWeek          int      `json:"hours_per_week"`
+	HoursPerWeekAvailable int      `json:"hours_per_week_available,omitempty"`
+	WeeklyTimePattern     string   `json:"weekly_time_pattern,omitempty"`
+	Timeframe             string   `json:"timeframe,omitempty"` // e.g., "6 months"
+	StartDate             string   `json:"start_date,omitempty"`
+	TargetEndDate         string   `json:"target_end_date,omitempty"`
+	CurrentCompany        *string  `json:"current_company,omitempty"`
+	CurrentPackage        *string  `json:"current_package,omitempty"`
+	ExpectedCompany       *string  `json:"expected_company,omitempty"`
+	ExpectedPackage       *string  `json:"expected_package,omitempty"`
+	EducationBackground   *string  `json:"education_background,omitempty"`
+	Certifications        []string `json:"certifications,omitempty"`
+	PortfolioURL          *string  `json:"portfolio_url,omitempty"`
+	InterviewExperience   *string  `json:"interview_experience,omitempty"`
+	LearningStyle         *string  `json:"learning_style,omitempty"`
+	TargetDomain          *string  `json:"target_domain,omitempty"`
+	NetworkAccess         *string  `json:"network_access,omitempty"`
+	AdditionalNotes       *string  `json:"additional_notes,omitempty"`
+	Model                 string   `json:"model,omitempty"`    // e.g., "gemini-2.0-flash"
+	Provider              string   `json:"provider,omitempty"` // e.g. "gemini", "huggingface", "groq", ...
+	CreatedAt             string   `json:"created_at,omitempty"`
+	LastReplacedAt        *string  `json:"last_replaced_at,omitempty"`
+}
+
+// RoadmapResource represents a learning resource.
+type RoadmapResource struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+// RoadmapSubtask represents a subtask within a task.
+type RoadmapSubtask struct {
+	SubtaskID string `json:"subtask_id"`
+	Text      string `json:"text"`
+	Checked   bool   `json:"checked"`
+}
+
+// RoadmapTask represents a task in the roadmap.
+type RoadmapTask struct {
+	TaskID      string            `json:"task_id"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Resources   []RoadmapResource `json:"resources,omitempty"`
+	Checked     bool              `json:"checked"`
+	Note        string            `json:"note,omitempty"`
+	Subtasks    []RoadmapSubtask  `json:"subtasks,omitempty"`
+}
+
+// RoadmapWeek represents a week in the roadmap.
+type RoadmapWeek struct {
+	WeekID    string        `json:"week_id"`
+	Tag       string        `json:"tag"`
+	Title     string        `json:"title"`
+	StartDate string        `json:"start_date"`
+	EndDate   string        `json:"end_date"`
+	Tasks     []RoadmapTask `json:"tasks"`
+}
+
+// RoadmapPhase represents a phase in the roadmap.
+type RoadmapPhase struct {
+	PhaseID string        `json:"phase_id"`
+	Title   string        `json:"title"`
+	Order   int           `json:"order"`
+	Weeks   []RoadmapWeek `json:"weeks"`
 }
 
 // GenerateResponse is the roadmap JSON per spec.
 type GenerateResponse struct {
-	RoadmapID      string `json:"roadmap_id"`
-	UserID         string `json:"user_id"`
-	Status         string `json:"status"`
-	OnboardingSource string `json:"onboarding_source"`
-	CurrentSkills  []string `json:"current_skills"`
-	TargetRole     string `json:"target_role"`
-	HoursPerWeek   int    `json:"hours_per_week"`
-	WeeklyTimePattern string `json:"weekly_time_pattern,omitempty"`
-	StartDate      string `json:"start_date"`
-	TargetEndDate  string `json:"target_end_date"`
-	// plus other fields as per spec; we will fill a minimal example.
-	Phases []struct {
-		PhaseID   string `json:"phase_id"`
-		Title     string `json:"title"`
-		Order     int    `json:"order"`
-		Weeks []struct {
-			WeekID   string `json:"week_id"`
-			Tag      string `json:"tag"`
-			Title    string `json:"title"`
-			StartDate string `json:"start_date"`
-			EndDate   string `json:"end_date"`
-			Tasks []struct {
-				TaskID   string `json:"task_id"`
-				Title    string `json:"title"`
-				Description string `json:"description"`
-				Resources []struct {
-					Label string `json:"label"`
-					URL   string `json:"url"`
-				} `json:"resources,omitempty"`
-				Checked   bool   `json:"checked"`
-				Note      string `json:"note,omitempty"`
-				Subtasks []struct {
-					SubtaskID string `json:"subtask_id"`
-					Text      string `json:"text"`
-					Checked   bool   `json:"checked"`
-				} `json:"subtasks,omitempty"`
-			} `json:"tasks"`
-		} `json:"weeks"`
-	} `json:"phases"`
-	CreatedAt string `json:"created_at"`
-	LastRepacedAt *string `json:"last_repaced_at,omitempty"`
+	RoadmapID             string         `json:"roadmap_id"`
+	UserID                string         `json:"user_id"`
+	Status                string         `json:"status"`
+	OnboardingSource      string         `json:"onboarding_source"`
+	CurrentSkills         []string       `json:"current_skills"`
+	TargetRole            string         `json:"target_role"`
+	HoursPerWeek          int            `json:"hours_per_week"`
+	HoursPerWeekAvailable int            `json:"hours_per_week_available,omitempty"`
+	WeeklyTimePattern     string         `json:"weekly_time_pattern,omitempty"`
+	StartDate             string         `json:"start_date"`
+	TargetEndDate         string         `json:"target_end_date"`
+	CurrentCompany        *string        `json:"current_company,omitempty"`
+	CurrentPackage        *string        `json:"current_package,omitempty"`
+	ExpectedCompany       *string        `json:"expected_company,omitempty"`
+	ExpectedPackage       *string        `json:"expected_package,omitempty"`
+	EducationBackground   *string        `json:"education_background,omitempty"`
+	Certifications        []string       `json:"certifications,omitempty"`
+	PortfolioURL          *string        `json:"portfolio_url,omitempty"`
+	InterviewExperience   *string        `json:"interview_experience,omitempty"`
+	LearningStyle         *string        `json:"learning_style,omitempty"`
+	TargetDomain          *string        `json:"target_domain,omitempty"`
+	NetworkAccess         *string        `json:"network_access,omitempty"`
+	AdditionalNotes       *string        `json:"additional_notes,omitempty"`
+	Phases                []RoadmapPhase `json:"phases"`
+	CreatedAt             string         `json:"created_at"`
+	LastReplacedAt        *string        `json:"last_replaced_at,omitempty"`
 }
 
-// HandleGenerate returns a dummy roadmap.
+// dbInst is the shared DB instance for this package.
+var dbInst *db.DB
+
+// SetDB sets the database instance for the roadmap handlers.
+func SetDB(db *db.DB) {
+	dbInst = db
+}
+
+// Helper to generate a simple UUID-like string.
+func generateID() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		// fallback to timestamp
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	// Set version bits (random UUID)
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant is 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// HandleGenerate returns a roadmap generated by the selected AI provider based on user input.
 func HandleGenerate(w http.ResponseWriter, r *http.Request) {
+	// Recover from panic to avoid resetting the TCP connection.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[roadmap] panic: %v", r)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+	}()
+
 	var req GenerateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[roadmap] invalid JSON: %v", err)
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 	// Validate required fields
 	if len(req.CurrentSkills) == 0 || req.TargetRole == "" || req.HoursPerWeek <= 0 {
-		http.Error(w, "missing required fields", http.StatusBadRequest)
+		log.Printf("[roadmap] missing required fields")
+		http.Error(w, "missing required fields (current_skills, target_role, hours_per_week>0)", http.StatusBadRequest)
 		return
 	}
-	// Build a simple hardcoded response matching schema (simplified)
-	resp := GenerateResponse{
-		RoadmapID:      "dummy-roadmap-id",
-		UserID:         "dummy-user-id",
-		Status:         "active",
-		OnboardingSource: "manual",
-		CurrentSkills:  req.CurrentSkills,
-		TargetRole:     req.TargetRole,
-		HoursPerWeek:   req.HoursPerWeek,
-		WeeklyTimePattern: req.WeeklyTimePattern,
-		StartDate:      "2026-07-13",
-		TargetEndDate:  "2026-12-07",
-		CreatedAt:      "2026-07-13T09:00:00Z",
-		Phases: []struct {
-			PhaseID   string `json:"phase_id"`
-			Title     string `json:"title"`
-			Order     int    `json:"order"`
-			Weeks []struct {
-				WeekID   string `json:"week_id"`
-				Tag      string `json:"tag"`
-				Title    string `json:"title"`
-				StartDate string `json:"start_date"`
-				EndDate   string `json:"end_date"`
-				Tasks []struct {
-					TaskID   string `json:"task_id"`
-					Title    string `json:"title"`
-					Description string `json:"description"`
-					Resources []struct {
-						Label string `json:"label"`
-						URL   string `json:"url"`
-					} `json:"resources,omitempty"`
-					Checked   bool   `json:"checked"`
-					Note      string `json:"note,omitempty"`
-					Subtasks []struct {
-						SubtaskID string `json:"subtask_id"`
-						Text      string `json:"text"`
-						Checked   bool   `json:"checked"`
-					} `json:"subtasks,omitempty"`
-				} `json:"tasks"`
-			} `json:"weeks"`
-		}{
+
+	// ----- Auth -----
+	userIDVal := r.Context().Value("userID")
+	if userIDVal == nil {
+		log.Printf("[roadmap] missing userID in context")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	userID, ok := userIDVal.(int64)
+	if !ok {
+		log.Printf("[roadmap] userID not int64: %v", userIDVal)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// ----- Retrieve encrypted API key -----
+	if dbInst == nil {
+		log.Printf("[roadmap] database not initialized")
+		http.Error(w, "database not initialized", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[roadmap] fetching API key for user %d", userID)
+
+	// Default model and provider for backward compatibility
+	if req.Provider == "" {
+		req.Provider = "gemini"
+	}
+
+	encryptedKey, err := dbInst.GetAPIKey(r.Context(), userID, req.Provider)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("[roadmap] API key not found for user %d and provider %s", userID, req.Provider)
+			http.Error(w, "API key not found for user", http.StatusUnauthorized)
+			return
+		}
+		log.Printf("[ERROR: Agent failed (Function process_single_item_agent timed out after 90.0 seconds), API failed (API request returned None after all retries)]", userID, req.Provider)
+		http.Error(w, "could not retrieve API key", http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[roadmap] retrieved encrypted key for user %d and provider %s", userID, req.Provider)
+
+	// ----- Decrypt API key -----
+	apiKey, err := apikey.Decrypt(encryptedKey)
+	if err != nil {
+		log.Printf("[roadmap] decryption failed: %v", err)
+		http.Error(w, "decryption failed", http.StatusInternalServerError)
+		return
+	}
+
+	// ----- Try to compute gap analysis using the new pipeline -----
+	var gapAnalysisOutput *pipeline.GapAnalysisOutput
+	var gapAnalysisJSON string
+	var useEnhancedTemplate bool
+
+	// Create the AI provider for gap analysis (using the same provider and model as the request)
+	genForGap, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
+	log.Printf("[roadmap] created AI provider for gap analysis: %v", genForGap)
+	if err != nil {
+		log.Printf("[roadmap] failed to create AI provider for gap analysis: %v", err)
+		// Fall back to old method
+		useEnhancedTemplate = false
+	} else {
+		// Create the gap analyzer
+		analyzer := pipeline.NewGapAnalyzer(genForGap)
+
+		// Prepare the input.
+		// Note: we don't have experience years and current role in the request, so we leave them as zero/empty.
+			// Convert req.CurrentSkills to a map with default proficiency 3
+			skillProficiencies := make(map[string]int)
+			for _, skill := range req.CurrentSkills {
+				skillProficiencies[skill] = 3 // default proficiency
+			}
+		gapInput := pipeline.GapAnalysisInput{
+			UserID:          userID,
+			SkillProficiencies:  skillProficiencies,
+			TargetRole:      req.TargetRole,
+			ExperienceYears: 0,  // We don't have this in the request
+			CurrentRole:     "", // We don't have this in the request
+		}
+
+		// Perform the analysis.
+		gapAnalysisOutput, err = analyzer.Analyze(r.Context(), gapInput)
+		if err != nil {
+			log.Printf("[roadmap] gap analysis failed: %v, falling back to old method", err)
+			useEnhancedTemplate = false
+		} else {
+			// Successfully computed gap analysis
+			gapAnalysisBytes, err := json.Marshal(gapAnalysisOutput)
+			if err != nil {
+				log.Printf("[roadmap] failed to marshal gap analysis: %v", err)
+				useEnhancedTemplate = false
+			} else {
+				gapAnalysisJSON = string(gapAnalysisBytes)
+				useEnhancedTemplate = true
+				log.Printf("[roadmap] gap analysis computed successfully")
+			}
+		}
+	}
+
+	log.Printf("[roadmap] gapAnalysisOutput: %v", gapAnalysisOutput)
+
+	// Prepare request data for prompt
+	reqData, _ := json.Marshal(req)
+	reqDataStr := string(reqData)
+
+	// Choose template and data based on whether we have gap analysis
+	var tmplData map[string]interface{}
+	var templateName string
+	if useEnhancedTemplate {
+		tmplData = map[string]interface{}{
+			"RequestJSON": reqDataStr,
+			"GapAnalysis": gapAnalysisJSON,
+		}
+		templateName = "roadmap_enhanced"
+	} else {
+		tmplData = map[string]interface{}{
+			"RequestJSON": reqDataStr,
+			// Note: the old template also expected these, but they are already in RequestJSON.
+			// We keep them for compatibility with the old template.
+			"CurrentSkills":     req.CurrentSkills,
+			"TargetRole":        req.TargetRole,
+			"HoursPerWeek":      req.HoursPerWeek,
+			"WeeklyTimePattern": req.WeeklyTimePattern,
+		}
+		templateName = "roadmap"
+	}
+
+	// Render the selected template
+	prompt, err := prompts.RenderTemplate(templateName, tmplData)
+	if err != nil {
+		log.Printf("[roadmap] failed to render %s template: %v", templateName, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Get a TextGenerator for the selected provider
+	gen, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
+	if err != nil {
+		log.Printf("[roadmap] unsupported provider %s: %v", req.Provider, err)
+		http.Error(w, fmt.Sprintf("unsupported provider %s: %v", req.Provider, err), http.StatusBadRequest)
+		return
+	}
+
+	// Generate text
+	generatedText, err := gen.GenerateText(r.Context(), prompt)
+	if err != nil {
+		log.Printf("[roadmap] failed to generate roadmap: %v", err)
+		http.Error(w, fmt.Sprintf("failed to generate roadmap: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Extract JSON object from the model output (trim any surrounding text)
+	jsonStr := strings.TrimSpace(generatedText)
+	startIdx := strings.Index(jsonStr, "{")
+	endIdx := strings.LastIndex(jsonStr, "}")
+	if startIdx == -1 || endIdx == -1 || endIdx < startIdx {
+		log.Printf("[roadmap] invalid response from provider: no JSON object found")
+		http.Error(w, "invalid response from provider: no JSON object found", http.StatusInternalServerError)
+		return
+	}
+	jsonStr = jsonStr[startIdx : endIdx+1]
+
+	// Parse into GenerateResponse
+	var resp GenerateResponse
+	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+		log.Printf("[roadmap] failed to parse provider response as JSON: %v", err)
+		http.Error(w, fmt.Sprintf("failed to parse provider response as JSON: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Fill in required fields
+	if resp.RoadmapID == "" {
+		resp.RoadmapID = generateID()
+	}
+	resp.UserID = fmt.Sprintf("%d", userID)
+	if resp.Status == "" {
+		resp.Status = "active"
+	}
+	if resp.OnboardingSource == "" {
+		resp.OnboardingSource = "generated"
+	}
+	if resp.StartDate == "" {
+		resp.StartDate = time.Now().UTC().Format("2006-01-02")
+	}
+	if resp.TargetEndDate == "" {
+		// If timeframe provided, try to parse; else approximate 12 weeks from start
+		if req.Timeframe != "" {
+			// Very naive: just add 3 months as fallback
+			t, err := time.Parse("2006-01-02", resp.StartDate)
+			if err != nil {
+				t = time.Now().UTC()
+			}
+			// Only add 3 months if we parsed successfully
+			if t != (time.Time{}) {
+				resp.TargetEndDate = t.AddDate(0, 3, 0).Format("2006-01-02")
+			} else {
+				// fallback
+				t = time.Now().UTC()
+				resp.TargetEndDate = t.AddDate(0, 3, 0).Format("2006-01-02")
+			}
+		} else {
+			t, err := time.Parse("2006-01-02", resp.StartDate)
+			if err != nil {
+				t = time.Now().UTC()
+			}
+			resp.TargetEndDate = t.AddDate(0, 3, 0).Format("2006-01-02")
+		}
+	}
+	if resp.CreatedAt == "" {
+		resp.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if resp.LastReplacedAt == nil {
+		var nilPtr *string
+		resp.LastReplacedAt = nilPtr
+	}
+	// Override to be safe
+	resp.CurrentSkills = req.CurrentSkills
+	resp.TargetRole = req.TargetRole
+	resp.HoursPerWeek = req.HoursPerWeek
+	if req.HoursPerWeekAvailable > 0 {
+		resp.HoursPerWeekAvailable = req.HoursPerWeekAvailable
+	} else {
+		resp.HoursPerWeekAvailable = req.HoursPerWeek
+	}
+	resp.WeeklyTimePattern = req.WeeklyTimePattern
+	if req.StartDate != "" {
+		resp.StartDate = req.StartDate
+	}
+	if req.TargetEndDate != "" {
+		resp.TargetEndDate = req.TargetEndDate
+	}
+	if req.CurrentCompany != nil {
+		resp.CurrentCompany = req.CurrentCompany
+	}
+	if req.CurrentPackage != nil {
+		resp.CurrentPackage = req.CurrentPackage
+	}
+	if req.ExpectedCompany != nil {
+		resp.ExpectedCompany = req.ExpectedCompany
+	}
+	if req.ExpectedPackage != nil {
+		resp.ExpectedPackage = req.ExpectedPackage
+	}
+	if req.EducationBackground != nil {
+		resp.EducationBackground = req.EducationBackground
+	}
+	if req.Certifications != nil {
+		resp.Certifications = req.Certifications
+	}
+	if req.PortfolioURL != nil {
+		resp.PortfolioURL = req.PortfolioURL
+	}
+	if req.InterviewExperience != nil {
+		resp.InterviewExperience = req.InterviewExperience
+	}
+	if req.LearningStyle != nil {
+		resp.LearningStyle = req.LearningStyle
+	}
+	if req.TargetDomain != nil {
+		resp.TargetDomain = req.TargetDomain
+	}
+	if req.NetworkAccess != nil {
+		resp.NetworkAccess = req.NetworkAccess
+	}
+	if req.AdditionalNotes != nil {
+		resp.AdditionalNotes = req.AdditionalNotes
+	}
+	if req.CreatedAt != "" {
+		resp.CreatedAt = req.CreatedAt
+	}
+	if req.LastReplacedAt != nil {
+		resp.LastReplacedAt = req.LastReplacedAt
+	}
+
+	// If phases are empty, add a placeholder phase to satisfy schema
+	if len(resp.Phases) == 0 {
+		endDate := func() string {
+			t, _ := time.Parse("2006-01-02", resp.StartDate)
+			return t.AddDate(0, 0, 6).Format("2006-01-02")
+		}()
+		resp.Phases = []RoadmapPhase{
 			{
-				PhaseID:   "p1",
-				Title:     "Phase 1 — Foundation",
-				Order:     1,
-				Weeks: []struct {
-					WeekID   string `json:"week_id"`
-					Tag      string `json:"tag"`
-					Title    string `json:"title"`
-					StartDate string `json:"start_date"`
-					EndDate   string `json:"end_date"`
-					Tasks []struct {
-						TaskID   string `json:"task_id"`
-						Title    string `json:"title"`
-						Description string `json:"description"`
-						Resources []struct {
-							Label string `json:"label"`
-							URL   string `json:"url"`
-						} `json:"resources,omitempty"`
-						Checked   bool   `json:"checked"`
-						Note      string `json:"note,omitempty"`
-						Subtasks []struct {
-							SubtaskID string `json:"subtask_id"`
-							Text      string `json:"text"`
-							Checked   bool   `json:"checked"`
-						} `json:"subtasks,omitempty"`
-					} `json:"tasks"`
-				}{
+				PhaseID: generateID(),
+				Title:   "Foundational Phase",
+				Order:   1,
+				Weeks: []RoadmapWeek{
 					{
-						WeekID:   "w1",
-						Tag:      "W1-2",
-						Title:    "Go syntax & core language",
-						StartDate: "2026-07-13",
-						EndDate:   "2026-07-26",
-						Tasks: []struct {
-							TaskID   string `json:"task_id"`
-							Title    string `json:"title"`
-							Description string `json:"description"`
-							Resources []struct {
-								Label string `json:"label"`
-								URL   string `json:"url"`
-							} `json:"resources,omitempty"`
-							Checked   bool   `json:"checked"`
-							Note      string `json:"note,omitempty"`
-							Subtasks []struct {
-								SubtaskID string `json:"subtask_id"`
-								Text      string `json:"text"`
-								Checked   bool   `json:"checked"`
-							} `json:"subtasks,omitempty"`
-						}{
+						WeekID:    generateID(),
+						Tag:       "W1",
+						Title:     "Kickoff and Goal Setting",
+						StartDate: resp.StartDate,
+						EndDate:   endDate,
+						Tasks: []RoadmapTask{
 							{
-								TaskID:   "w1_0",
-								Title:    "Finish 'A Tour of Go' end to end",
-								Description: "Work through Go's official interactive tour, covering basic syntax, structs, methods, and interfaces. Type out every exercise rather than skimming — muscle memory pays off once you hit concurrency in week 3. Budget roughly 4-5 hours across the week.",
-								Resources: []struct {
-									Label string `json:"label"`
-									URL   string `json:"url"`
-								}{
-									{Label: "A Tour of Go (official)", URL: "https://go.dev/tour/"},
-								},
-								Checked: false,
-								Note:    "",
-								Subtasks: []struct {
-									SubtaskID string `json:"subtask_id"`
-									Text      string `json:"text"`
-									Checked   bool   `json:"checked"`
-								}{
-									{SubtaskID: "w1_0_a", Text: "Complete Basics section", Checked: false},
-									{SubtaskID: "w1_0_b", Text: "Complete Methods and Interfaces section", Checked: false},
-									{SubtaskID: "w1_0_c", Text: "Complete Concurrency intro section", Checked: false},
-								},
+								TaskID:      generateID(),
+								Title:       "Review goals and resources",
+								Description: "Confirm target role and gather learning materials.",
+								Checked:     false,
 							},
 						},
 					},
 				},
 			},
-		},
+		}
+		// log.Printf("[roadmap] added placeholder phase")
+
+		// Marshal final response to store and return
+		responseBytes, err := json.Marshal(resp)
+		if err != nil {
+			log.Printf("[roadmap] failed to marshal response: %v", err)
+			http.Error(w, fmt.Sprintf("failed to marshal response: %v", err), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("[roadmap] marshaled response, size %d bytes", len(responseBytes))
+
+		// Store in DB
+		log.Printf("[roadmap] storing roadmap for user %d", userID)
+		if err := dbInst.SaveRoadmap(r.Context(), userID, responseBytes); err != nil {
+			log.Printf("[roadmap] DB save error: %v", err)
+			http.Error(w, fmt.Sprintf("failed to save roadmap: %v", err), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("[roadmap] roadmap stored successfully for user %d", userID)
+
+		// Return response
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(responseBytes)
+		log.Printf("[roadmap] response sent")
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 // HandleReplan handles replanning requests (continue vs fresh, deadline choice).
@@ -217,9 +500,9 @@ func HandleReplan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// Return a dummy warning and new dates
 	response := map[string]interface{}{
-		"warning": nil,
+		"warning":             nil,
 		"new_target_end_date": "2026-12-07",
-		"repaced_weeks": []interface{}{},
+		"replaced_weeks":      []interface{}{},
 	}
 	json.NewEncoder(w).Encode(response)
 }

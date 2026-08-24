@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,15 +10,16 @@ import (
 	"sync"
 	"time"
 
+	"passo/backend/internal/ai/provider"
 	"passo/backend/internal/apikey"
 	"passo/backend/internal/db"
-	"passo/backend/internal/gemini"
 )
 
 // ChatRequest represents the incoming chat message.
 type ChatRequest struct {
-	Message string `json:"message"`
-	Model   string `json:"model,omitempty"` // optional, defaults to gemini-2.0-flash
+	Message  string `json:"message"`
+	Model    string `json:"model,omitempty"`    // optional, defaults to gemini-2.0-flash
+	Provider string `json:"provider,omitempty"` // e.g. "gemini", "huggingface", "groq", ...
 }
 
 // ChatResponse represents the AI mentor's reply.
@@ -91,14 +93,15 @@ func hashRequest(r *http.Request, req ChatRequest) string {
 	h.Write([]byte(r.RemoteAddr))
 	h.Write([]byte(r.UserAgent()))
 	h.Write([]byte(req.Message))
-	h.Write([]byte(req.Model)) // include model in hash
+	h.Write([]byte(req.Model))
+	h.Write([]byte(req.Provider)) // include provider in hash
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
-// HandleChat processes a chat message and returns a response from the Gemini API.
-// It expects a JSON body with a "message" field and optional "model".
-// It retrieves the user's encrypted API key from the database, decrypts it,
-// calls the Gemini function, and returns the AI-generated reply.
+// HandleChat processes a chat message and returns a response from the selected AI provider.
+// It expects a JSON body with a "message" field, optional "model", and optional "provider".
+// It retrieves the user's encrypted API key from the database for the given provider,
+// decrypts it, selects the appropriate provider implementation, and returns the AI-generated reply.
 func HandleChat(w http.ResponseWriter, r *http.Request) {
 	// Decode request body
 	var req ChatRequest
@@ -110,8 +113,12 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "message is required", http.StatusBadRequest)
 		return
 	}
+	// Set defaults
 	if req.Model == "" {
-		req.Model = "gemini-2.0-flash" // default model
+		req.Model = "gemini-2.0-flash" // default model (used by Gemini provider)
+	}
+	if req.Provider == "" {
+		req.Provider = "gemini" // default provider
 	}
 
 	// Idempotency-Key header: if present, use it for deduplication.
@@ -141,15 +148,15 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get encrypted API key from database.
+	// Get encrypted API key from database for the specific provider.
 	if database == nil {
 		http.Error(w, "database not initialized", http.StatusInternalServerError)
 		return
 	}
-	encryptedKey, err := database.GetAPIKey(r.Context(), userID)
+	encryptedKey, err := database.GetAPIKey(r.Context(), userID, req.Provider)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "API key not found for user", http.StatusUnauthorized)
+			http.Error(w, "API key not found for user and provider", http.StatusUnauthorized)
 			return
 		}
 		http.Error(w, "could not retrieve API key", http.StatusInternalServerError)
@@ -163,12 +170,18 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Printf("User %d requested chat with model %s: %s\n", userID, req.Model, req.Message, apiKey) // Log the request for debugging purposes.
-	// Call Gemini API.
-	generatedText, err := gemini.GenerateText(apiKey, req.Message, req.Model)
+	// Get a TextGenerator for the requested provider.
+	gen, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("unsupported provider %s: %v", req.Provider, err), http.StatusBadRequest)
+		return
+	}
+
+	// Generate text using the selected provider.
+	generatedText, err := gen.GenerateText(r.Context(), req.Message)
 	if err != nil {
 		// Log the error for debugging.
-		fmt.Printf("Error generating text: %v\n", err)
+		fmt.Printf("Error generating text from provider %s: %v\n", req.Provider, err)
 		http.Error(w, "failed to generate response", http.StatusInternalServerError)
 		return
 	}
@@ -190,3 +203,6 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(responseBytes)
 }
+
+// Used to ensure the context package is not considered unused.
+var _ context.Context

@@ -1,0 +1,1 @@
+ALTER TABLE roadmaps DROP COLUMN payload;

@@ -3,18 +3,18 @@ package apikey
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"crypto/rand"
 	"net/http"
+	"strings"
+	"database/sql"
 
 	"passo/backend/internal/config"
 	"passo/backend/internal/db"
-
-	"database/sql"
 )
 
 var (
@@ -31,11 +31,17 @@ func SetDB(db *db.DB) {
 type StoreKeyRequest struct {
 	Key           string `json:"key,omitempty"`           // plaintext API key
 	EncryptedKey  string `json:"encrypted_key,omitempty"` // optional pre‑encrypted key (base64)
+	Provider      string `json:"provider,omitempty"`      // e.g. "gemini", "huggingface", "groq", ...
 }
 
 // StoreKeyResponse is the response after storing a key.
 type StoreKeyResponse struct {
 	Message string `json:"message"`
+}
+
+// GetKeyRequest represents the request to retrieve an API key.
+type GetKeyRequest struct {
+	Provider string `json:"provider,omitempty"` // defaults to "gemini"
 }
 
 // GetKeyResponse is returned when retrieving the stored key.
@@ -44,7 +50,7 @@ type GetKeyResponse struct {
 }
 
 // encrypt encrypts a plaintext string using AES‑256‑GCM with the configured key.
-// The result is a base64‑encoded string containing:nonce || ciphertext.
+// The result is a base64‑encoded string containing: nonce || ciphertext.
 func encrypt(plaintext string) (string, error) {
 	// Decode the base64‑encoded encryption key from config.
 	keyBytes, err := base64.StdEncoding.DecodeString(cfg.EncryptionKey)
@@ -103,6 +109,16 @@ func Decrypt(ciphertextB64 string) (string, error) {
 	return string(plaintext), nil
 }
 
+// normalizeProvider returns a canonical provider name (lowercase, trimmed),
+// defaulting to "gemini" for empty input.
+func normalizeProvider(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	if p == "" {
+		return "gemini"
+	}
+	return p
+}
+
 // HandleStoreKey stores the API key for the authenticated user.
 // It accepts either a plaintext "key" (which it encrypts) or a pre‑encrypted
 // "encrypted_key". The encrypted value is saved in the api_keys table.
@@ -154,8 +170,10 @@ func HandleStoreKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := database.SaveAPIKey(r.Context(), userID, encrypted); err != nil {
-		http.Error(w, "could not save API key", http.StatusInternalServerError)
+	provider := normalizeProvider(req.Provider)
+
+	if err := database.SaveAPIKey(r.Context(), userID, provider, encrypted); err != nil {
+		http.Error(w, "could not store API key", http.StatusInternalServerError)
 		return
 	}
 
@@ -167,6 +185,12 @@ func HandleStoreKey(w http.ResponseWriter, r *http.Request) {
 // HandleGetKey retrieves the stored API key for the authenticated user.
 // It returns the plaintext key for convenience (encrypted in storage).
 func HandleGetKey(w http.ResponseWriter, r *http.Request) {
+	// Optional: allow provider via query param or JSON body.
+	// We'll check query first, then fallback to body, then default.
+	var req GetKeyRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // ignore error; empty body ok
+	}
 	userIDVal := r.Context().Value("userID")
 	if userIDVal == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -178,10 +202,15 @@ func HandleGetKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encrypted, err := database.GetAPIKey(r.Context(), userID)
+	provider := normalizeProvider(r.URL.Query().Get("provider"))
+	if provider == "" {
+		provider = normalizeProvider(req.Provider)
+	}
+
+	encrypted, err := database.GetAPIKey(r.Context(), userID, provider)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// No key stored yet.
+			// No key stored for this provider – return empty string as before
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(GetKeyResponse{Key: ""})
 			return

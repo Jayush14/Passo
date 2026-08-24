@@ -1,0 +1,1 @@
+ALTER TABLE roadmaps ADD COLUMN payload JSONB;
