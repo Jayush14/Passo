@@ -9,6 +9,7 @@ import (
 	"passo/backend/internal/ai/provider/gemini"
 	"passo/backend/internal/ai/provider/huggingface"
 	"passo/backend/internal/ai/provider/groq"
+	"passo/backend/internal/ai/provider/local"
 	"passo/backend/internal/ai/provider/openai"
 	"passo/backend/internal/ai/provider/together"
 )
@@ -24,6 +25,8 @@ func Factory(ctx context.Context, providerName, apiKey, model string) (contract.
 		return huggingface.New(apiKey, model), nil
 	case "groq":
 		return groq.New(apiKey, model), nil
+	case "local":
+		return local.New(apiKey, model), nil
 	case "openai":
 		return openai.New(apiKey, model), nil
 	case "together", "togetherai":

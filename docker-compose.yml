@@ -27,6 +27,9 @@ services:
       DB_URL: postgres://postgres:postgres@db:5432/passo?sslmode=disable
       JWT_SECRET: newsupersecret
       ENCRYPTION_KEY: RYG14COk/FwKbrIaL51mBkOsUL/N3V0Iq4nHzo0m53M=   # must be 32 bytes
+      CLAUDE_LOCAL_HOST: host.docker.internal
+      CLAUDE_LOCAL_PORT: 8081
+      # CLAUDE_CLI_PATH is intentionally not set to avoid trying to start the server in the container
     ports:
       - "8080:8080"
     depends_on:

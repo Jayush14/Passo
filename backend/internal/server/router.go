@@ -11,6 +11,7 @@ import (
 	"passo/backend/internal/chat"
 	"passo/backend/internal/guardrail"
 	"passo/backend/internal/notify"
+	"passo/backend/internal/processor"
 	"passo/backend/internal/progress"
 	"passo/backend/internal/roadmap"
 	"passo/backend/internal/subscription"
@@ -43,6 +44,12 @@ func Router() *http.ServeMux {
 
 	// Chat routes (require auth)
 	mux.HandleFunc("POST /chat", middleware(authMiddleware(chat.HandleChat)))
+
+	// Job processing routes (require auth)
+	mux.HandleFunc("POST /process/job", middleware(authMiddleware(processor.HandleProcessJob)))
+	mux.HandleFunc("POST /process/job/batch", middleware(authMiddleware(processor.HandleProcessJobBatch)))
+	mux.HandleFunc("GET /batch/{batch_id}", middleware(authMiddleware(processor.GetBatchStatus)))
+	mux.HandleFunc("POST /batch/stop", middleware(authMiddleware(processor.HandleStopBatch)))
 
 	// Notification routes (require auth)
 	mux.HandleFunc("POST /push/subscribe", middleware(authMiddleware(notify.HandleSubscribe)))

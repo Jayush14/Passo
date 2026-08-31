@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 
 	"passo/backend/internal/ai/provider/contract"
@@ -41,6 +42,7 @@ func (g *geminiGenerator) GenerateText(ctx context.Context, prompt string) (stri
 		return "", fmt.Errorf("gemini model not configured")
 	}
 
+	log.Printf("Calling Gemini API with model: %s", g.defaultModel)
 	// Build Gemini-specific request
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", g.defaultModel, g.apiKey)
 
@@ -84,7 +86,7 @@ func (g *geminiGenerator) GenerateText(ctx context.Context, prompt string) (stri
 	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
 		return "", fmt.Errorf("failed to parse gemini response: %w", err)
 	}
-
+	fmt.Printf("Gemini response: %+v\n", geminiResp)
 	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
 		return "", contract.ErrEmptyResponse
 	}

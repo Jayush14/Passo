@@ -10,6 +10,7 @@ import (
 	"passo/backend/internal/chat"
 	"passo/backend/internal/config"
 	"passo/backend/internal/db"
+	"passo/backend/internal/processor"
 	"passo/backend/internal/roadmap"
 	"passo/backend/internal/server"
 )
@@ -41,6 +42,8 @@ func main() {
 	chat.SetDB(dbConn)
 	// Set the shared DB instance for roadmap handlers
 	roadmap.SetDB(dbConn)
+	// Set the shared DB instance for processor handlers
+	processor.SetDB(dbConn)
 	// Gemini no longer requires DB access - using direct API key in GenerateText function
 
 	// Create server
