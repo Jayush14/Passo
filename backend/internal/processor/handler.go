@@ -121,27 +121,28 @@ func HandleProcessJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate text using AI provider
+	// TEMP TEST MODE: fake the LLM response to delay and return a valid JSON payload
+	// without calling the provider again.
+
 	generatedText, err := gen.GenerateText(r.Context(), prompt)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to generate job extraction: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to generate text: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Generate a UUID for this extraction
-	extractionID := uuid.New()
-	jobID := extractionID.String()
+	// Use a single stable job ID for this extraction lifecycle.
+	jobID := uuid.New().String()
 
-	// Save the raw response to the database in the background
+	// Save the raw response to the database in the background.
 	go func() {
-		// Use background context to avoid request cancellation issues
+		// Use background context to avoid request cancellation issues.
 		ctx := context.Background()
 		_, err := dbInst.ExecContext(ctx, `
 			INSERT INTO job_extractions (id, job_id, provider, model, prompt_version, raw_response, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, extractionID, jobID, req.Provider, req.Model, "v1", generatedText, time.Now())
+		`, jobID, jobID, req.Provider, req.Model, "v1", generatedText, time.Now())
 		if err != nil {
-			// Log the error but don't fail the request
+			// Log the error but don't fail the request.
 			fmt.Printf("failed to save job extraction: %v\n", err)
 		}
 	}()
@@ -199,14 +200,15 @@ type batchJob struct {
 
 // BatchStatusResponse is the payload returned by GET /batch/{batch_id}.
 type BatchStatusResponse struct {
-	BatchID       string    `json:"batch_id"`
-	UserID        int64     `json:"user_id"`
-	TotalJobs     int       `json:"total_jobs"`
-	ProcessedOK   int       `json:"processed_ok"`
-	ProcessedFail int       `json:"processed_fail"`
-	Status        string    `json:"status"` // pending | processing | completed
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	BatchID        string    `json:"batch_id"`
+	UserID         int64     `json:"user_id"`
+	TotalJobs      int       `json:"total_jobs"`
+	ProcessedOK    int       `json:"processed_ok"`
+	ProcessedFail  int       `json:"processed_fail"`
+	JobsInProgress int       `json:"jobs_in_progress"`
+	JobsWaiting    int       `json:"jobs_waiting"`
+	Status         string    `json:"status"` // pending | processing | completed | stopped
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // processSingleJob contains the core logic of processing a single job.
@@ -257,12 +259,12 @@ func processSingleJob(ctx context.Context, job batchJob, dbInst *db.DB) (string,
 
 // saveFailedRaw stores the raw job description when a job fails to be processed.
 func saveFailedRaw(ctx context.Context, job batchJob, batchID string, userID int64, dbInst *db.DB) error {
-	failedID := uuid.New()
+	// Reuse the same stable job ID that was created when the staging row was inserted.
 	_, err := dbInst.ExecContext(ctx, `
 		INSERT INTO job_failed_raw
 			(id, job_id, batch_id, user_id, provider, model, job_description, retry_count)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-	`, failedID, job.JobID, batchID, userID, job.Provider, job.Model, job.JobDescription, 0)
+	`, job.JobID, job.JobID, batchID, userID, job.Provider, job.Model, job.JobDescription, 0)
 	return err
 }
 
@@ -273,6 +275,20 @@ func saveFailedRaw(ctx context.Context, job batchJob, batchID string, userID int
 func updateBatchProgress(ctx context.Context, batchID string, okDelta, failDelta int, dbInst *db.DB) error {
 	// Log the delta for debugging
 	log.Printf("updateBatchProgress: batchID=%s, okDelta=%d, failDelta=%d", batchID, okDelta, failDelta)
+
+	// Get current values for logging
+	var currentOK, currentFail, totalJobs, currentIP, currentW int64
+	errQuery := dbInst.QueryRowContext(ctx, `
+		SELECT processed_ok, processed_fail, total_jobs, jobs_in_progress, jobs_waiting
+		FROM job_batches WHERE batch_id = $1
+	`, batchID).Scan(&currentOK, &currentFail, &totalJobs, &currentIP, &currentW)
+	if errQuery != nil {
+		log.Printf("failed to query current batch state: %v", errQuery)
+	} else {
+		log.Printf("batch %s: before update - OK=%d, Fail=%d, IP=%d, Wait=%d, Total=%d",
+			batchID, currentOK, currentFail, currentIP, currentW, totalJobs)
+	}
+
 	_, err := dbInst.ExecContext(ctx, `
 		UPDATE job_batches
 		SET processed_ok = processed_ok + $1,
@@ -281,17 +297,159 @@ func updateBatchProgress(ctx context.Context, batchID string, okDelta, failDelta
 				WHEN (processed_ok + $1 + processed_fail + $2) = total_jobs THEN 'completed'
 				ELSE status
 			 END,
+		    jobs_in_progress = CASE
+				WHEN (processed_ok + $1 + processed_fail + $2) = total_jobs THEN 0
+				ELSE jobs_in_progress
+			 END,
+		    jobs_waiting = CASE
+				WHEN (processed_ok + $1 + processed_fail + $2) = total_jobs THEN 0
+				ELSE jobs_waiting
+			 END,
 		    updated_at = now()
 		WHERE batch_id = $3
 	`, okDelta, failDelta, batchID)
 	if err != nil {
 		return err
 	}
+
+	// Get updated values for logging
+	var newOK, newFail, newIP, newW int64
+	var newStatus string
+	errQuery = dbInst.QueryRowContext(ctx, `
+		SELECT processed_ok, processed_fail, jobs_in_progress, jobs_waiting, status
+		FROM job_batches WHERE batch_id = $1
+	`, batchID).Scan(&newOK, &newFail, &newIP, &newW, &newStatus)
+	if errQuery != nil {
+		log.Printf("failed to query updated batch state: %v", errQuery)
+	} else {
+		log.Printf("batch %s: after update - OK=%d, Fail=%d, IP=%d, Wait=%d, Status=%s",
+			batchID, newOK, newFail, newIP, newW, newStatus)
+	}
+
 	// If batch completed, remove cancel function to clean up
 	var status string
 	err = dbInst.QueryRowContext(ctx, "SELECT status FROM job_batches WHERE batch_id = $1", batchID).Scan(&status)
 	if err == nil && status == "completed" {
+		log.Printf("batch %s: batch completed, removing cancel function", batchID)
 		batchCancels.Delete(batchID)
+	}
+	return nil
+}
+
+// updateBatchJobCounts updates the in-progress and waiting job counts
+func updateBatchJobCounts(ctx context.Context, batchID string, inProgressDelta, waitingDelta int, dbInst *db.DB) error {
+	log.Printf("updateBatchJobCounts: batchID=%s, inProgressDelta=%d, waitingDelta=%d", batchID, inProgressDelta, waitingDelta)
+
+	// Get current values for logging
+	var currentIP, currentW int64
+	errQuery := dbInst.QueryRowContext(ctx, `
+		SELECT jobs_in_progress, jobs_waiting
+		FROM job_batches WHERE batch_id = $1
+	`, batchID).Scan(&currentIP, &currentW)
+	if errQuery != nil {
+		log.Printf("failed to query current job counts: %v", errQuery)
+	} else {
+		log.Printf("batch %s: before job count update - IP=%d, Wait=%d",
+			batchID, currentIP, currentW)
+	}
+
+	_, err := dbInst.ExecContext(ctx, `
+		UPDATE job_batches
+		SET jobs_in_progress = jobs_in_progress + $1,
+		    jobs_waiting = jobs_waiting + $2,
+		    updated_at = now()
+		WHERE batch_id = $3
+	`, inProgressDelta, waitingDelta, batchID)
+	if err != nil {
+		return err
+	}
+
+	// Get updated values for logging
+	var newIP, newW int64
+	errQuery = dbInst.QueryRowContext(ctx, `
+		SELECT jobs_in_progress, jobs_waiting
+		FROM job_batches WHERE batch_id = $1
+	`, batchID).Scan(&newIP, &newW)
+	if errQuery != nil {
+		log.Printf("failed to query updated job counts: %v", errQuery)
+	} else {
+		log.Printf("batch %s: after job count update - IP=%d, Wait=%d",
+			batchID, newIP, newW)
+	}
+
+	return err
+}
+
+// updateJobStagingStatus updates the status of a job in the staging table
+func updateJobStagingStatus(ctx context.Context, jobID string, batchID string, status string, dbInst *db.DB) error {
+	_, err := dbInst.ExecContext(ctx, `
+		UPDATE job_staging
+		SET status = $1, updated_at = now()
+		WHERE id = $2 AND batch_id = $3
+	`, status, jobID, batchID)
+	return err
+}
+
+// updateJobStagingDescription updates the job_description field of a job in the staging table
+func updateJobStagingDescription(ctx context.Context, jobID string, batchID string, jobDescription string, dbInst *db.DB) error {
+	_, err := dbInst.ExecContext(ctx, `
+		UPDATE job_staging
+		SET job_description = $1, updated_at = now()
+		WHERE id = $2 AND batch_id = $3
+	`, jobDescription, jobID, batchID)
+	return err
+}
+
+// updateJobStagingStatusAndDescription updates both status and job_description of a job in the staging table
+func updateJobStagingStatusAndDescription(ctx context.Context, jobID string, batchID string, status string, jobDescription string, dbInst *db.DB) error {
+	_, err := dbInst.ExecContext(ctx, `
+		UPDATE job_staging
+		SET status = $1, job_description = $2, updated_at = now()
+		WHERE id = $3 AND batch_id = $4
+	`, status, jobDescription, jobID, batchID)
+	return err
+}
+
+// updateJobStagingResponse stores the LLM response in the raw_json field of a job in the staging table
+func updateJobStagingResponse(ctx context.Context, jobID string, batchID string, response string, dbInst *db.DB) error {
+	_, err := dbInst.ExecContext(ctx, `
+		UPDATE job_staging
+		SET raw_json = $1::jsonb, updated_at = now()
+		WHERE id = $2 AND batch_id = $3
+	`, response, jobID, batchID)
+	return err
+}
+
+// updateJobStagingStatusAndResponse updates both status and raw_json (LLM response) of a job in the staging table
+func updateJobStagingStatusAndResponse(ctx context.Context, jobID string, batchID string, status string, response string, dbInst *db.DB) error {
+	_, err := dbInst.ExecContext(ctx, `
+		UPDATE job_staging
+		SET status = $1, raw_json = $2::jsonb, updated_at = now()
+		WHERE id = $3 AND batch_id = $4
+	`, status, response, jobID, batchID)
+	return err
+}
+
+// maybeUpdateBatchStatus checks if all jobs for a batch are done and updates the batch status to completed.
+func maybeUpdateBatchStatus(ctx context.Context, batchID string, userID int64, dbInst *db.DB) error {
+	var pending, inprog int
+	err := dbInst.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'pending'),
+			COUNT(*) FILTER (WHERE status = 'inprogress')
+		FROM job_staging
+		WHERE batch_id = $1
+	`, batchID).Scan(&pending, &inprog)
+	if err != nil {
+		return err
+	}
+	if pending == 0 && inprog == 0 {
+		_, err := dbInst.ExecContext(ctx, `
+			UPDATE job_batches
+			SET status = 'completed', updated_at = now()
+			WHERE batch_id = $1 AND user_id = $2
+		`, batchID, userID)
+		return err
 	}
 	return nil
 }
@@ -305,44 +463,91 @@ func workerFn(
 	llmLimiter chan struct{}, // shared semaphore limiting LLM calls
 ) {
 	for job := range jobs {
-		// Acquire a token from the LLM semaphore (blocks if none available)
-		llmLimiter <- struct{}{}
-		generatedText, err := processSingleJob(context.Background(), job, dbInst)
-		<-llmLimiter // release token
-
+		// Fetch the actual job data from the staging table
+		var jobData struct {
+			JobDescription string
+			Provider       string
+			Model          string
+		}
+		err := dbInst.QueryRowContext(context.Background(), `
+			SELECT job_description, provider, model
+			FROM job_staging
+			WHERE id = $1 AND batch_id = $2
+		`, job.JobID, batchID).Scan(&jobData.JobDescription, &jobData.Provider, &jobData.Model)
 		if err != nil {
-			log.Printf("batch %s job %s failed: %v", batchID, job.JobID, err)
-			// Persist the raw description for later retry
-			if saveErr := saveFailedRaw(context.Background(), job, batchID, userID, dbInst); saveErr != nil {
-				log.Printf("failed to write raw description for batch %s job %s: %v", batchID, job.JobID, saveErr)
-			}
-			// Update progress: increment failure count
-			if err := updateBatchProgress(context.Background(), batchID, 0, 1, dbInst); err != nil {
-				log.Printf("failed to update batch progress: %v", err)
+			log.Printf("batch %s job %s: failed to fetch job data from staging: %v", batchID, job.JobID, err)
+			// Update job staging status to failed
+			if err := updateJobStagingStatus(context.Background(), job.JobID, batchID, "failed", dbInst); err != nil {
+				log.Printf("failed to update job staging status to failed: %v", err)
 			}
 			continue
 		}
-		// Success path – insert raw response in background
+
+		// log.Printf("batch %s job %s: moving from waiting to in progress", batchID, job.JobID)
+		// Move job from waiting to in progress in staging table
+		if err := updateJobStagingStatus(context.Background(), job.JobID, batchID, "inprogress", dbInst); err != nil {
+			log.Printf("failed to update job staging status: %v", err)
+		}
+
+		// Acquire a token from the LLM semaphore (blocks if none available)
+		// log.Printf("batch %s job %s: waiting for LLM token", batchID, job.JobID)
+		llmLimiter <- struct{}{}
+		// log.Printf("batch %s job %s: acquired LLM token, starting processing", batchID, job.JobID)
+
+		// Create a temporary batchJob with the actual data from the database
+		dbJob := batchJob{
+			JobDescription: jobData.JobDescription,
+			Provider:       jobData.Provider,
+			Model:          jobData.Model,
+			UserID:         userID,
+			BatchID:        batchID,
+			JobID:          job.JobID,
+		}
+
+		generatedText, err := processSingleJob(context.Background(), dbJob, dbInst)
+		// log.Printf("batch %s job %s: finished LLM processing", batchID, job.JobID)
+		<-llmLimiter // release token
+		// log.Printf("batch %s job %s: released LLM token", batchID, job.JobID)
+
+		if err != nil {
+			log.Printf("batch %s job %s failed: %v", batchID, job.JobID, err)
+			// Update job staging status to failed
+			if err := updateJobStagingStatus(context.Background(), job.JobID, batchID, "failed", dbInst); err != nil {
+				log.Printf("failed to update job staging status to failed: %v", err)
+			}
+			// Optionally store error info in raw_json
+			if updateErr := updateJobStagingResponse(context.Background(), job.JobID, batchID, fmt.Sprintf(`{"error":"%v"}`, err), dbInst); updateErr != nil {
+				log.Printf("failed to update job staging raw_json with error: %v", updateErr)
+			}
+			// Check if batch is done after this failure
+			if err := maybeUpdateBatchStatus(context.Background(), batchID, userID, dbInst); err != nil {
+				log.Printf("failed to maybe update batch status: %v", err)
+			}
+			continue
+		}
+		// Success path – insert raw response in background and update staging
+		// log.Printf("batch %s job %s: saving raw response to DB", batchID, job.JobID)
 		go func() {
 			ctx := context.Background()
-			extractionID := uuid.New()
-			jobID := extractionID.String()
 			_, err := dbInst.ExecContext(ctx, `
 				INSERT INTO job_extractions
 					(id, job_id, provider, model, prompt_version, raw_response, created_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`, extractionID, jobID, job.Provider, job.Model, "v1", generatedText, time.Now())
+			`, dbJob.JobID, dbJob.JobID, dbJob.Provider, dbJob.Model, "v1", generatedText, time.Now())
 			if err != nil {
 				log.Printf("failed to save job extraction: %v", err)
 			}
 		}()
-		// Update progress: increment success count
-		if err := updateBatchProgress(context.Background(), batchID, 1, 0, dbInst); err != nil {
-			log.Printf("failed to update batch progress: %v", err)
+		// Update job staging status to completed and store raw response
+		if err := updateJobStagingStatusAndResponse(context.Background(), job.JobID, batchID, "completed", generatedText, dbInst); err != nil {
+			log.Printf("failed to update job staging status and raw_json: %v", err)
+		}
+		// Check if batch is done after this success
+		if err := maybeUpdateBatchStatus(context.Background(), batchID, userID, dbInst); err != nil {
+			log.Printf("failed to maybe update batch status: %v", err)
 		}
 	}
 }
-
 
 // HandleProcessJobBatch starts a batch processing job.
 // It expects a JSON payload with an array of job objects.
@@ -381,7 +586,7 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create batch record
+	// Create batch record with essential fields only
 	batchID := uuid.New().String()
 	_, err := dbInst.ExecContext(r.Context(), `
 		INSERT INTO job_batches
@@ -392,6 +597,31 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to create batch record: %v", err)
 		http.Error(w, "failed to create batch record", http.StatusInternalServerError)
 		return
+	}
+
+	// Create staging entries for each job and keep the database IDs for the sender loop.
+	stagedJobIDs := make([]string, 0, len(req.Jobs))
+	for _, j := range req.Jobs {
+		jobID := uuid.New().String()
+		// Set default provider and model if not specified
+		provider := j.Provider
+		if provider == "" {
+			provider = "gemini"
+		}
+		model := j.Model
+		if model == "" {
+			model = "gemini-2.0-flash"
+		}
+		_, err := dbInst.ExecContext(r.Context(), `
+			INSERT INTO job_staging
+				(id, batch_id, user_id, provider, model, job_description, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, jobID, batchID, userID, provider, model, j.JobDescription, "pending", time.Now(), time.Now())
+		if err != nil {
+			log.Printf("failed to create staging entry for job: %v", err)
+			continue
+		}
+		stagedJobIDs = append(stagedJobIDs, jobID)
 	}
 
 	// Create a cancellable context for this batch
@@ -415,7 +645,7 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	jobChan := make(chan batchJob, len(req.Jobs))
+	jobChan := make(chan batchJob, 1)
 	llmLimiter := make(chan struct{}, llmConcurrency)
 
 	// Start workers
@@ -426,14 +656,23 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 	// Sender goroutine: sends jobs unless stop is requested
 	go func() {
 		defer close(jobChan)
-		// Note: cancel function is kept in batchCancels until batch completes
-		for _, j := range req.Jobs {
+		for i, j := range req.Jobs {
+			if i >= len(stagedJobIDs) {
+				log.Printf("batch %s: missing staging ID for job index %d", batchID, i)
+				continue
+			}
+
+			jobID := stagedJobIDs[i]
 			select {
 			case <-ctx.Done():
-				// stop requested
+				log.Printf("batch %s: stop requested, marking %d remaining jobs as stopped", batchID, len(req.Jobs)-i)
+				for _, remainingJobID := range stagedJobIDs[i:] {
+					if err := updateJobStagingStatus(context.Background(), remainingJobID, batchID, "stopped", dbInst); err != nil {
+						log.Printf("failed to update job staging status to stopped: %v", err)
+					}
+				}
 				return
 			default:
-				jobID := uuid.New().String()
 				jobChan <- batchJob{
 					JobDescription: j.JobDescription,
 					Provider:       j.Provider,
@@ -511,10 +750,33 @@ func HandleStopBatch(w http.ResponseWriter, r *http.Request) {
 	if cancelFunc, ok := batchCancels.Load(batchID); ok {
 		if cancel, ok := cancelFunc.(context.CancelFunc); ok {
 			cancel() // signal cancellation
+
+			// Update batch status to stopped
+			if _, err := dbInst.ExecContext(r.Context(), `
+				UPDATE job_batches
+				SET status = 'stopped',
+				    updated_at = now()
+				WHERE batch_id = $1 AND user_id = $2
+			`, batchID, userID); err != nil {
+				log.Printf("failed to update batch status to stopped: %v", err)
+				// Continue anyway since we already cancelled
+			}
+
+			// Update job staging status to stopped for pending and inprogress jobs
+			if _, err := dbInst.ExecContext(r.Context(), `
+				UPDATE job_staging
+				SET status = 'stopped', updated_at = now()
+				WHERE batch_id = $1 AND status IN ('pending', 'inprogress')
+			`, batchID); err != nil {
+				log.Printf("failed to update job staging status to stopped: %v", err)
+			}
 			log.Printf("stop requested for batch %s", batchID)
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"message": "stop requested"})
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "stop requested",
+			})
 			return
 		}
 	}
@@ -527,7 +789,9 @@ func HandleStopBatch(w http.ResponseWriter, r *http.Request) {
 // GetBatchStatus returns the current status and progress for a batch.
 func GetBatchStatus(w http.ResponseWriter, r *http.Request) {
 	// Extract batch_id from path: /batch/<uuid>
+
 	batchID := strings.TrimPrefix(r.URL.Path, "/batch/")
+	fmt.Printf("GetBatchStatus called for batchID=%s\n", batchID)
 	if batchID == "" {
 		http.Error(w, "missing batch_id", http.StatusBadRequest)
 		return
@@ -551,21 +815,20 @@ func GetBatchStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var resp BatchStatusResponse
+	// Get basic batch info from job_batches
 	err := dbInst.QueryRowContext(r.Context(), `
-		SELECT batch_id, user_id, total_jobs, processed_ok, processed_fail,
-		       status, created_at, updated_at
+		SELECT batch_id, user_id, total_jobs, status, created_at
 		FROM job_batches
 		WHERE batch_id = $1 AND user_id = $2
 	`, batchID, userID).Scan(
 		&resp.BatchID,
 		&resp.UserID,
 		&resp.TotalJobs,
-		&resp.ProcessedOK,
-		&resp.ProcessedFail,
 		&resp.Status,
 		&resp.CreatedAt,
-		&resp.UpdatedAt,
 	)
+
+	fmt.Println("response after scanning batch info:", resp, "error:", err)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "batch not found or access denied", http.StatusNotFound)
@@ -575,6 +838,44 @@ func GetBatchStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get job counts from job_staging table
+	var pendingCount, inprogressCount, completedCount, failedCount int
+	countsErr := dbInst.QueryRowContext(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'pending') as pending,
+			COUNT(*) FILTER (WHERE status = 'inprogress') as inprogress,
+			COUNT(*) FILTER (WHERE status = 'completed') as completed,
+			COUNT(*) FILTER (WHERE status = 'failed') as failed
+		FROM job_staging
+		WHERE batch_id = $1
+	`, batchID).Scan(&pendingCount, &inprogressCount, &completedCount, &failedCount)
+	if countsErr != nil {
+		log.Printf("failed to get job counts from staging table: %v", countsErr)
+		// Set defaults to avoid breaking the response
+		pendingCount = 0
+		inprogressCount = 0
+		completedCount = 0
+		failedCount = 0
+	}
+
+	fmt.Printf("batch %s: counts - pending=%d, inprogress=%d, completed=%d, failed=%d\n",
+		batchID, pendingCount, inprogressCount, completedCount, failedCount)
+
+	// Set response values
+	resp.ProcessedOK = completedCount
+	resp.ProcessedFail = failedCount
+	resp.JobsInProgress = inprogressCount
+	resp.JobsWaiting = pendingCount
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "batch not found or access denied", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to read batch status", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("GetBatchStatus: returning response: %+v\n", resp)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }

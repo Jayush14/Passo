@@ -1,0 +1,9 @@
+PORT=8080
+ENV=development
+DB_URL=postgres://postgres:postgres@localhost:5433/passo?sslmode=disable
+JWT_SECRET=supersecret
+TOKEN_EXPIRY_HOURS=24
+ENCRYPTION_KEY=RYG14COk/FwKbrIaL51mBkOsUL/N3V0Iq4nHzo0m53M=
+HOUSE_KEY=
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=

@@ -48,7 +48,7 @@ func Router() *http.ServeMux {
 	// Job processing routes (require auth)
 	mux.HandleFunc("POST /process/job", middleware(authMiddleware(processor.HandleProcessJob)))
 	mux.HandleFunc("POST /process/job/batch", middleware(authMiddleware(processor.HandleProcessJobBatch)))
-	mux.HandleFunc("GET /batch/{batch_id}", middleware(authMiddleware(processor.GetBatchStatus)))
+	mux.HandleFunc("POST /batch/{batch_id}", middleware(authMiddleware(processor.GetBatchStatus)))
 	mux.HandleFunc("POST /batch/stop", middleware(authMiddleware(processor.HandleStopBatch)))
 
 	// Notification routes (require auth)

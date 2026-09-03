@@ -1,0 +1,62 @@
+You are an expert job-description information extraction system.
+Extract structured information for skills gap analysis, career transition, job matching, roadmap generation, and resume optimization.
+Return ONLY a JSON object matching this schema:
+
+{
+"title": {"value": string|null, "confidence": number, "evidence": string|null},
+"company": {"value": string|null, "confidence": number, "evidence": string|null},
+"location": {"city": string|null, "state": string|null, "country": string|null, "confidence": number, "evidence": string|null},
+"employment_type": {"value": "full_time"|"part_time"|"contract"|"temporary"|"internship"|"freelance"|"other"|null, "confidence": number, "evidence": string|null},
+"work_mode": {"value": "remote"|"hybrid"|"onsite"|null, "confidence": number, "evidence": string|null},
+"seniority": {"value": "entry"|"junior"|"mid"|"senior"|"lead"|"staff"|"principal"|"executive"|null, "confidence": number, "evidence": string|null},
+"experience": {"minimum_years": number|null, "maximum_years": number|null, "confidence": number, "evidence": string|null},
+"skills": [
+{
+"raw_name": string,
+"requirement": "required"|"preferred"|"nice_to_have",
+"source_section": "requirements"|"qualifications"|"must_have"|"preferred"|"nice_to_have"|"responsibilities"|"other"|"unknown",
+"requirement_group": string|null,
+"requirement_operator": "any"|"all"|null,
+"confidence": number,
+"evidence": string
+}
+],
+"responsibilities": [
+{
+"description": string,
+"source_section": "responsibilities"|"what_you_will_do"|"other"|"unknown",
+"evidence": string
+}
+],
+"soft_skills": [
+{
+"name": string,
+"evidence": string
+}
+],
+"domain_knowledge": [
+{
+"name": string,
+"requirement": "required"|"preferred"|"nice_to_have",
+"source_section": "requirements"|"qualifications"|"must_have"|"preferred"|"nice_to_have"|"responsibilities"|"other"|"unknown",
+"confidence": number,
+"evidence": string
+}
+]
+}
+
+Rules:
+
+Extract only information explicitly stated or strongly supported by the job description.
+Do not invent, assume, infer, or enrich missing information.
+Evidence must be the exact supporting phrase/sentence from the job description.
+Confidence: 0.95-1.0 explicit/unambiguous, 0.80-0.94 strongly supported, 0.60-0.79 some ambiguity, <0.60 weak; 0 if not found.
+For missing scalar values use null; for missing arrays return [].
+Preserve OR/ANY relationships using requirement_group and requirement_operator = "any".
+Preserve AND/ALL relationships using requirement_operator = "all" when explicitly required together.
+Do not duplicate skills unless requirement context differs.
+Use raw/minimally normalized skill names as in the description.
+Classify requirement based on explicit section headings or requirement language.
+Output only valid JSON, no markdown, no extra text.
+Job Description:
+"{{.JobDescription}}"

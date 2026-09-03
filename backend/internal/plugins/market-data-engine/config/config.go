@@ -8,9 +8,9 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	LLM      LLMConfig
+	Server     ServerConfig
+	Database   DatabaseConfig
+	LLM        LLMConfig
 	Processing ProcessingConfig
 }
 
@@ -25,14 +25,14 @@ type ServerConfig struct {
 
 // DatabaseConfig holds database connection configuration
 type DatabaseConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
-	MaxOpenConns int
-	MaxIdleConns int
+	Host            string
+	Port            string
+	User            string
+	Password        string
+	DBName          string
+	SSLMode         string
+	MaxOpenConns    int
+	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
 }
 
@@ -65,11 +65,11 @@ type GoogleConfig struct {
 
 // ProcessingConfig holds job processing configuration
 type ProcessingConfig struct {
-	MaxConcurrentJobs int
-	JobTimeoutSeconds int
-	MaxRetryAttempts  int
-	BaseRetryDelay    time.Duration
-	MaxRetryDelay     time.Duration
+	MaxConcurrentJobs   int
+	JobTimeoutSeconds   int
+	MaxRetryAttempts    int
+	BaseRetryDelay      time.Duration
+	MaxRetryDelay       time.Duration
 	ConfidenceThreshold float64
 }
 
@@ -79,19 +79,19 @@ func Load() (*Config, error) {
 		Server: ServerConfig{
 			Port:         getEnv("SERVER_PORT", "8080"),
 			Environment:  getEnv("SERVER_ENV", "development"),
-			ReadTimeout:  time.Duration(getEnvAsInt("SERVER_READ_TIMEOUT", 15)) * time.Second,
-			WriteTimeout: time.Duration(getEnvAsInt("SERVER_WRITE_TIMEOUT", 15)) * time.Second,
-			IdleTimeout:  time.Duration(getEnvAsInt("SERVER_IDLE_TIMEOUT", 60)) * time.Second,
+			ReadTimeout:  time.Duration(getEnvAsInt("SERVER_READ_TIMEOUT", 120)) * time.Second,
+			WriteTimeout: time.Duration(getEnvAsInt("SERVER_WRITE_TIMEOUT", 120)) * time.Second,
+			IdleTimeout:  time.Duration(getEnvAsInt("SERVER_IDLE_TIMEOUT", 120)) * time.Second,
 		},
 		Database: DatabaseConfig{
-			Host:     getEnv("POSTGRES_HOST", "localhost"),
-			Port:     getEnv("POSTGRES_PORT", "5432"),
-			User:     getEnv("POSTGRES_USER", "postgres"),
-			Password: getEnv("POSTGRES_PASSWORD", "password"),
-			DBName:   getEnv("POSTGRES_DB", "market_data"),
-			SSLMode:  getEnv("POSTGRES_SSLMODE", "disable"),
-			MaxOpenConns: getEnvAsInt("POSTGRES_MAX_OPEN_CONNS", 25),
-			MaxIdleConns: getEnvAsInt("POSTGRES_MAX_IDLE_CONNS", 25),
+			Host:            getEnv("POSTGRES_HOST", "localhost"),
+			Port:            getEnv("POSTGRES_PORT", "5432"),
+			User:            getEnv("POSTGRES_USER", "postgres"),
+			Password:        getEnv("POSTGRES_PASSWORD", "password"),
+			DBName:          getEnv("POSTGRES_DB", "market_data"),
+			SSLMode:         getEnv("POSTGRES_SSLMODE", "disable"),
+			MaxOpenConns:    getEnvAsInt("POSTGRES_MAX_OPEN_CONNS", 25),
+			MaxIdleConns:    getEnvAsInt("POSTGRES_MAX_IDLE_CONNS", 25),
 			ConnMaxLifetime: time.Duration(getEnvAsInt("POSTGRES_CONN_MAX_LIFETIME", 300)) * time.Second,
 		},
 		LLM: LLMConfig{
@@ -110,11 +110,11 @@ func Load() (*Config, error) {
 			},
 		},
 		Processing: ProcessingConfig{
-			MaxConcurrentJobs: getEnvAsInt("MAX_CONCURRENT_JOBS", 10),
-			JobTimeoutSeconds: getEnvAsInt("JOB_TIMEOUT_SECONDS", 300),
-			MaxRetryAttempts:  getEnvAsInt("MAX_RETRY_ATTEMPTS", 3),
-			BaseRetryDelay:    time.Duration(getEnvAsInt("BASE_RETRY_DELAY_SECONDS", 1)) * time.Second,
-			MaxRetryDelay:     time.Duration(getEnvAsInt("MAX_RETRY_DELAY_SECONDS", 60)) * time.Second,
+			MaxConcurrentJobs:   getEnvAsInt("MAX_CONCURRENT_JOBS", 10),
+			JobTimeoutSeconds:   getEnvAsInt("JOB_TIMEOUT_SECONDS", 300),
+			MaxRetryAttempts:    getEnvAsInt("MAX_RETRY_ATTEMPTS", 3),
+			BaseRetryDelay:      time.Duration(getEnvAsInt("BASE_RETRY_DELAY_SECONDS", 1)) * time.Second,
+			MaxRetryDelay:       time.Duration(getEnvAsInt("MAX_RETRY_DELAY_SECONDS", 60)) * time.Second,
 			ConfidenceThreshold: getEnvAsFloat("CONFIDENCE_THRESHOLD", 0.7),
 		},
 	}

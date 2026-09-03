@@ -7,9 +7,11 @@ import (
 
 	"passo/backend/internal/ai/provider/contract"
 	"passo/backend/internal/ai/provider/gemini"
-	"passo/backend/internal/ai/provider/huggingface"
 	"passo/backend/internal/ai/provider/groq"
+	"passo/backend/internal/ai/provider/huggingface"
 	"passo/backend/internal/ai/provider/local"
+	"passo/backend/internal/ai/provider/modal"
+	"passo/backend/internal/ai/provider/nvidia"
 	"passo/backend/internal/ai/provider/openai"
 	"passo/backend/internal/ai/provider/together"
 )
@@ -27,10 +29,14 @@ func Factory(ctx context.Context, providerName, apiKey, model string) (contract.
 		return groq.New(apiKey, model), nil
 	case "local":
 		return local.New(apiKey, model), nil
+	case "nvidia":
+		return nvidia.New(apiKey, model), nil
 	case "openai":
 		return openai.New(apiKey, model), nil
 	case "together", "togetherai":
 		return together.New(apiKey, model), nil
+	case "modal":
+		return modal.New(apiKey, model), nil
 	default:
 		return nil, fmt.Errorf("unsupported AI provider: %s", providerName)
 	}

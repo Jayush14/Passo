@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds application configuration.
@@ -23,13 +25,16 @@ type Config struct {
 
 // LoadConfig reads configuration from environment variables.
 func LoadConfig() *Config {
+	// Load .env file if it exists
+	_ = godotenv.Load() // Ignore error if .env file doesn't exist
+
 	return &Config{
 		Port:            getEnv("PORT", "8080"),
 		Env:             getEnv("ENV", "development"),
 		DBURL:           getEnv("DB_URL", "postgres://postgres:postgres@localhost:5432/passo?sslmode=disable"),
 		JWTSecret:       getEnv("JWT_SECRET", "supersecret"),
 		TokenExpiry:     time.Duration(getEnvAsInt("TOKEN_EXPIRY_HOURS", 24)) * time.Hour,
-		EncryptionKey:   getEnv("ENCRYPTION_KEY", ""), // must be set in prod
+		EncryptionKey:   getEnv("ENCRYPTION_KEY", "RYG14COk/FwKbrIaL51mBkOsUL/N3V0Iq4nHzo0m53M="), // must be set in prod
 		HouseKey:        getEnv("HOUSE_KEY", ""),
 		VAPIDPublicKey:  getEnv("VAPID_PUBLIC_KEY", ""),
 		VAPIDPrivateKey: getEnv("VAPID_PRIVATE_KEY", ""),
