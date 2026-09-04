@@ -2,19 +2,23 @@ package processing
 
 import (
 	"passo/backend/internal/plugins/market-data-engine/models"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Pipeline coordinates the extraction and normalization stages
 type Pipeline struct {
 	extractor *Extractor
 	normalizer *Normalizer
+	db        *pgxpool.Pool
 }
 
 // NewPipeline creates a new processing pipeline
-func NewPipeline() *Pipeline {
+func NewPipeline(db *pgxpool.Pool) *Pipeline {
 	return &Pipeline{
 		extractor: NewExtractor(),
-		normalizer: NewNormalizer(),
+		normalizer: NewNormalizer(db),
+		db:        db,
 	}
 }
 

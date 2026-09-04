@@ -10,12 +10,15 @@ import (
 
 	"log"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	_ "github.com/lib/pq"
 )
 
 // DB wraps sql.DB.
 type DB struct {
 	*sql.DB
+	Pool *pgxpool.Pool
 }
 
 // New creates a new DB instance from a postgres connection string.
@@ -27,7 +30,27 @@ func New(dataSourceName string) (*DB, error) {
 	if err = db.Ping(); err != nil {
 		return nil, err
 	}
-	return &DB{db}, nil
+
+	pool, err := pgxpool.New(context.Background(), dataSourceName)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		db.Close()
+		return nil, err
+	}
+
+	return &DB{DB: db, Pool: pool}, nil
+}
+
+// Close releases both database connections.
+func (db *DB) Close() error {
+	if db.Pool != nil {
+		db.Pool.Close()
+	}
+	return db.DB.Close()
 }
 
 // CreateUser inserts a new user and returns the user ID.
@@ -44,7 +67,7 @@ func (db *DB) CreateUser(ctx context.Context, email, passwordHash string) (int64
 // GetUserByEmail retrieves a user by email.
 func (db *DB) GetUserByEmail(ctx context.Context, email string) (int64, string, error) {
 	var (
-		id          int64
+		id           int64
 		passwordHash string
 	)
 	err := db.QueryRowContext(

@@ -142,7 +142,7 @@ type SoftSkillField struct {
 type NormalizedSkill struct {
 	RawName           string  `json:"raw_name"`
 	NormalizedName    string  `json:"normalized_name"`
-	Capability        *Capability `json:"capability,omitempty"`
+	Capability        *ExtractedCapability `json:"capability,omitempty"`
 	Confidence        float64 `json:"confidence"`
 	RequirementLevel  string  `json:"requirement_level"` // "required" or "preferred"
 	Evidence          string  `json:"evidence,omitempty"`
@@ -161,8 +161,8 @@ type NormalizedSoftSkill struct {
 	Evidence string  `json:"evidence,omitempty"`
 }
 
-// Capability represents a skill or competency in the canonical taxonomy
-type Capability struct {
+// ExtractedCapability represents a skill or competency from the extraction process
+type ExtractedCapability struct {
 	ID              uuid.UUID `json:"id"`
 	CanonicalName   string    `json:"canonical_name"`
 	Category        string    `json:"category"`
@@ -176,8 +176,8 @@ type Capability struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// CapabilityAlias represents an alternative name for a capability
-type CapabilityAlias struct {
+// ExtractedCapabilityAlias represents an alternative name for a capability from extraction
+type ExtractedCapabilityAlias struct {
 	ID        uuid.UUID `json:"id"`
 	CapabilityID uuid.UUID `json:"capability_id"`
 	Alias       string    `json:"alias"`
@@ -185,8 +185,8 @@ type CapabilityAlias struct {
 	Confidence  float64   `json:"confidence"`
 }
 
-// JobCapability represents the relationship between a job and a required capability
-type JobCapability struct {
+// ExtractedJobCapability represents the relationship between a job and a required capability from extraction
+type ExtractedJobCapability struct {
 	ID              uuid.UUID `json:"id"`
 	JobID           uuid.UUID `json:"job_id"`
 	CapabilityID    uuid.UUID `json:"capability_id"`
@@ -200,8 +200,8 @@ type JobCapability struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// JobResponsibility represents a responsibility extracted from a job description
-type JobResponsibility struct {
+// ExtractedJobResponsibility represents a responsibility extracted from a job description
+type ExtractedJobResponsibility struct {
 	ID          uuid.UUID `json:"id"`
 	JobID       uuid.UUID `json:"job_id"`
 	Responsibility string  `json:"responsibility"`
@@ -212,8 +212,8 @@ type JobResponsibility struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// RoleProfile represents an aggregated profile for a specific role
-type RoleProfile struct {
+// ExtractedRoleProfile represents an aggregated profile for a specific role from extraction
+type ExtractedRoleProfile struct {
 	ID          uuid.UUID `json:"id"`
 	RoleName    string    `json:"role_name"`
 	Seniority   string    `json:"seniority"`
@@ -224,8 +224,8 @@ type RoleProfile struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// RoleProfileCapability represents the relationship between a role profile and a capability
-type RoleProfileCapability struct {
+// ExtractedRoleProfileCapability represents the relationship between a role profile and a capability from extraction
+type ExtractedRoleProfileCapability struct {
 	ID          uuid.UUID `json:"id"`
 	RoleProfileID uuid.UUID `json:"role_profile_id"`
 	CapabilityID  uuid.UUID `json:"capability_id"`
@@ -238,8 +238,8 @@ type RoleProfileCapability struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// MarketTrend represents time-series data on capability demand
-type MarketTrend struct {
+// ExtractedMarketTrend represents time-series data on capability demand from extraction
+type ExtractedMarketTrend struct {
 	ID          uuid.UUID `json:"id"`
 	CapabilityID uuid.UUID `json:"capability_id"`
 	RoleID      uuid.UUID `json:"role_id"`
@@ -253,51 +253,51 @@ type MarketTrend struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// ExtractionResult represents the structured output from LLM extraction
-type ExtractionResult struct {
+// ExtractedExtractionResult represents the structured output from LLM extraction
+type ExtractedExtractionResult struct {
 	Title           *TitleField           `json:"title,omitempty"`
 	Seniority       *SeniorityField       `json:"seniority,omitempty"`
 	Experience      *ExperienceField      `json:"experience,omitempty"`
-	Education       *EducationField       `json:"education,omitempty"`
-	Certifications  []CertificationField  `json:"certificates,omitempty"`
+	Education       *ExtractedEducationField  `json:"education,omitempty"`
+	Certifications  []ExtractedCertificationField  `json:"certificates,omitempty"`
 	Skills          []SkillField          `json:"skills,omitempty"`
 	Responsibilities []ResponsibilityField `json:"responsibilities,omitempty"`
-	Leadership      []LeadershipField     `json:"leadership,omitempty"`
-	Domain          []DomainField         `json:"domain,omitempty"`
+	Leadership      []ExtractedLeadershipField     `json:"leadership,omitempty"`
+	Domain          []ExtractedDomainField         `json:"domain,omitempty"`
 }
 
-// EducationField represents education requirements
-type EducationField struct {
+// ExtractedEducationField represents education requirements from extraction
+type ExtractedEducationField struct {
 	Degree     string  `json:"degree,omitempty"`
 	FieldOfStudy string `json:"field_of_study,omitempty"`
 	Confidence float64 `json:"confidence"`
 }
 
-// CertificationField represents a certification requirement
-type CertificationField struct {
+// ExtractedCertificationField represents a certification requirement from extraction
+type ExtractedCertificationField struct {
 	Name       string  `json:"name,omitempty"`
 	Authority  string  `json:"authority,omitempty"`
 	Confidence float64 `json:"confidence"`
 }
 
-// LeadershipField represents leadership expectations
-type LeadershipField struct {
+// ExtractedLeadershipField represents leadership expectations from extraction
+type ExtractedLeadershipField struct {
 	Leadership   string  `json:"leadership"`
 	Importance   float64 `json:"importance"`
 	Confidence   float64 `json:"confidence"`
 	Evidence     string  `json:"evidence,omitempty"`
 }
 
-// DomainField represents domain/industry knowledge
-type DomainField struct {
+// ExtractedDomainField represents domain/industry knowledge from extraction
+type ExtractedDomainField struct {
 	Domain     string  `json:"domain"`
 	Importance float64 `json:"importance"`
 	Confidence float64 `json:"confidence"`
 	Evidence   string  `json:"evidence,omitempty"`
 }
 
-// Job represents a normalized and validated job posting
-type Job struct {
+// ExtractedJob represents a normalized and validated job posting from extraction
+type ExtractedJob struct {
 	ID              uuid.UUID `json:"id"`
 	RawDataID       uuid.UUID `json:"raw_data_id"`
 	Title           string    `json:"title"`

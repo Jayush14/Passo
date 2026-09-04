@@ -2,9 +2,12 @@ package processing
 
 import (
 	"fmt"
+
 	"passo/backend/internal/plugins/market-data-engine/models"
 	"passo/backend/internal/plugins/market-data-engine/taxonomy"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Normalizer handles normalization of extracted job data using deterministic matching
@@ -15,8 +18,8 @@ type Normalizer struct {
 }
 
 // NewNormalizer creates a new Normalizer instance
-func NewNormalizer() *Normalizer {
-	taxonomyService := taxonomy.NewTaxonomyService()
+func NewNormalizer(db *pgxpool.Pool) *Normalizer {
+	taxonomyService := taxonomy.NewTaxonomyService(db)
 	return &Normalizer{
 		taxonomyService: taxonomyService,
 		matcher:         taxonomy.NewMatcher(taxonomyService),
@@ -42,10 +45,27 @@ func (n *Normalizer) NormalizeSkills(extractedSkills []models.SkillField) []mode
 	// Convert back to the expected format
 	var result []models.NormalizedSkill
 	for _, normSkill := range normalized {
+		var extCap *models.ExtractedCapability
+		if normSkill.Capability != nil {
+			// Convert from *models.Capability to *models.ExtractedCapability
+			extCap = &models.ExtractedCapability{
+				ID:              normSkill.Capability.ID,
+				CanonicalName:   normSkill.Capability.Name,
+				Category:        normSkill.Capability.Category,
+				Subcategory:     "", // Not in base Capability model
+				Description:     normSkill.Capability.Description,
+				ParentID:        nil, // Not in base Capability model
+				LevelDefinition: nil, // Not in base Capability model
+				Status:          "active", // Default status
+				TaxonomyVersion: normSkill.Capability.TaxonomyVersion.String(),
+				CreatedAt:       normSkill.Capability.CreatedAt,
+				UpdatedAt:       normSkill.Capability.UpdatedAt,
+			}
+		}
 		result = append(result, models.NormalizedSkill{
 			RawName:           normSkill.RawName,
 			NormalizedName:    normSkill.NormalizedName,
-			Capability:        normSkill.Capability,
+			Capability:        extCap,
 			Confidence:        normSkill.Confidence,
 			RequirementLevel:  normSkill.RequirementLevel,
 			Evidence:          normSkill.Evidence,

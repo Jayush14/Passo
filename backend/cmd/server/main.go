@@ -47,7 +47,7 @@ func main() {
 	// Gemini no longer requires DB access - using direct API key in GenerateText function
 
 	// Create server
-	srv := server.NewServer(cfg)
+	srv := server.NewServer(cfg, dbConn)
 
 	// Determine address
 	addr := ":" + cfg.Port

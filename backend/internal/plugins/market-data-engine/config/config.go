@@ -12,6 +12,7 @@ type Config struct {
 	Database   DatabaseConfig
 	LLM        LLMConfig
 	Processing ProcessingConfig
+	Worker     WorkerConfig
 }
 
 // ServerConfig holds HTTP server configuration
@@ -73,6 +74,17 @@ type ProcessingConfig struct {
 	ConfidenceThreshold float64
 }
 
+// WorkerConfig holds worker pool configuration
+type WorkerConfig struct {
+	JobPollInterval         string // e.g., "30s", "1m"
+	MaxConcurrentJobs       int
+	BatchSize               int
+	MaxRetryAttempts        int
+	FuzzyDistanceLimit      int
+	NormalizationConfidenceThreshold float64
+	EnableSyncNormalization bool
+}
+
 // Load loads configuration from environment variables with defaults
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -88,7 +100,7 @@ func Load() (*Config, error) {
 			Port:            getEnv("POSTGRES_PORT", "5432"),
 			User:            getEnv("POSTGRES_USER", "postgres"),
 			Password:        getEnv("POSTGRES_PASSWORD", "password"),
-			DBName:          getEnv("POSTGRES_DB", "market_data"),
+			DBName:          getEnv("POSTGRES_DB", "passo"), // Changed from "market_data" to match main DB
 			SSLMode:         getEnv("POSTGRES_SSLMODE", "disable"),
 			MaxOpenConns:    getEnvAsInt("POSTGRES_MAX_OPEN_CONNS", 25),
 			MaxIdleConns:    getEnvAsInt("POSTGRES_MAX_IDLE_CONNS", 25),
@@ -116,6 +128,15 @@ func Load() (*Config, error) {
 			BaseRetryDelay:      time.Duration(getEnvAsInt("BASE_RETRY_DELAY_SECONDS", 1)) * time.Second,
 			MaxRetryDelay:       time.Duration(getEnvAsInt("MAX_RETRY_DELAY_SECONDS", 60)) * time.Second,
 			ConfidenceThreshold: getEnvAsFloat("CONFIDENCE_THRESHOLD", 0.7),
+		},
+		Worker: WorkerConfig{
+			JobPollInterval:         getEnv("JOB_POLL_INTERVAL", "1m"),
+			MaxConcurrentJobs:       getEnvAsInt("MAX_CONCURRENT_JOBS_WORKER", 4),
+			BatchSize:               getEnvAsInt("BATCH_SIZE", 100),
+			MaxRetryAttempts:        getEnvAsInt("MAX_RETRY_ATTEMPTS_WORKER", 3),
+			FuzzyDistanceLimit:      getEnvAsInt("FUZZY_DISTANCE_LIMIT", 2),
+			NormalizationConfidenceThreshold: getEnvAsFloat("NORMALIZATION_CONFIDENCE_THRESHOLD", 0.90),
+			EnableSyncNormalization: getEnvAsBool("ENABLE_SYNC_NORMALIZATION", false),
 		},
 	}
 
@@ -166,6 +187,15 @@ func getEnvAsInt(key string, defaultValue int) int {
 func getEnvAsFloat(key string, defaultValue float64) float64 {
 	if value := os.Getenv(key); value != "" {
 		if val, err := fmt.Sscanf(value, "%f", &defaultValue); err == nil && val == 1 {
+			return defaultValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if val, err := fmt.Sscanf(value, "%t", &defaultValue); err == nil && val == 1 {
 			return defaultValue
 		}
 	}

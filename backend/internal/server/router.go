@@ -11,6 +11,7 @@ import (
 	"passo/backend/internal/chat"
 	"passo/backend/internal/guardrail"
 	"passo/backend/internal/notify"
+	"passo/backend/internal/plugins/market-data-engine/api/handlers"
 	"passo/backend/internal/processor"
 	"passo/backend/internal/progress"
 	"passo/backend/internal/roadmap"
@@ -19,6 +20,12 @@ import (
 
 // Router creates and returns a ServeMux with all application routes.
 func Router() *http.ServeMux {
+	return RouterWithMDEHandler(nil)
+}
+
+// RouterWithMDEHandler creates and returns a ServeMux with all application routes,
+// using the provided MDE processing handler.
+func RouterWithMDEHandler(mdeHandler *handlers.ProcessingHandler) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Global middleware: logging (can be extended)
@@ -50,6 +57,13 @@ func Router() *http.ServeMux {
 	mux.HandleFunc("POST /process/job/batch", middleware(authMiddleware(processor.HandleProcessJobBatch)))
 	mux.HandleFunc("POST /batch/{batch_id}", middleware(authMiddleware(processor.GetBatchStatus)))
 	mux.HandleFunc("POST /batch/stop", middleware(authMiddleware(processor.HandleStopBatch)))
+
+	// Market Data Engine processing routes (require auth)
+	if mdeHandler != nil {
+		mux.HandleFunc("POST /mde/process/start", middleware(authMiddleware(mdeHandler.StartProcessing)))
+		mux.HandleFunc("POST /mde/process/stop", middleware(authMiddleware(mdeHandler.StopProcessing)))
+		mux.HandleFunc("GET /mde/process/status", middleware(authMiddleware(mdeHandler.GetProcessingStatus)))
+	}
 
 	// Notification routes (require auth)
 	mux.HandleFunc("POST /push/subscribe", middleware(authMiddleware(notify.HandleSubscribe)))

@@ -3,6 +3,7 @@ package taxonomy
 import (
 	"passo/backend/internal/plugins/market-data-engine/models"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/google/uuid"
@@ -198,7 +199,7 @@ func (m *Matcher) FindBestMatch(target string, candidates []string) (*models.Cap
 	if bestScore < 0.8 {
 		for _, capability := range m.taxonomyService.GetAllCapabilities() {
 			// Check canonical name
-			score := m.FuzzyMatch(target, capability.CanonicalName)
+			score := m.FuzzyMatch(target, capability.Name)
 			if score > bestScore {
 				bestScore = score
 				bestMatch = capability
@@ -219,10 +220,12 @@ func (m *Matcher) FindBestMatch(target string, candidates []string) (*models.Cap
 			tempID, _ := uuid.NewRandom()
 			bestMatch = &models.Capability{
 				ID:              tempID,
-				CanonicalName:   normalized,
+				Name:            normalized,
 				Category:        "unknown",
-				Status:          "active",
-				TaxonomyVersion: "1.0",
+				Description:     "Temporary capability for unknown skill",
+				CreatedAt:       time.Now(),
+				UpdatedAt:       time.Now(),
+				TaxonomyVersion: uuid.Nil,
 			}
 			bestScore = 0.3 // Low confidence for unknown skill
 		}
@@ -250,18 +253,18 @@ func (m *Matcher) MatchSkills(skillMatches []SkillMatch) []NormalizedSkill {
 
 		// Build the normalized skill
 		normalizedSkill := NormalizedSkill{
-			RawName:           skillMatch.RawName,
-			NormalizedName:    "", // Will be set below
-			Capability:        bestCap,
-			Confidence:        confidence,
-			RequirementLevel:  skillMatch.RequirementLevel,
-			Evidence:          skillMatch.Evidence,
-			AlternativeNames:  skillMatch.AlternativeNames,
+			RawName:          skillMatch.RawName,
+			NormalizedName:   "", // Will be set below
+			Capability:       bestCap,
+			Confidence:       confidence,
+			RequirementLevel: skillMatch.RequirementLevel,
+			Evidence:         skillMatch.Evidence,
+			AlternativeNames: skillMatch.AlternativeNames,
 		}
 
 		// Set the normalized name based on the capability or fallback to raw name
 		if bestCap != nil {
-			normalizedSkill.NormalizedName = bestCap.CanonicalName
+			normalizedSkill.NormalizedName = bestCap.Name
 		} else {
 			// If no capability found, use the normalized form of the raw name
 			normalizedSkill.NormalizedName = m.taxonomyService.NormalizeSkill(skillMatch.RawName)
@@ -275,19 +278,19 @@ func (m *Matcher) MatchSkills(skillMatches []SkillMatch) []NormalizedSkill {
 
 // SkillMatch represents a skill as extracted from raw data
 type SkillMatch struct {
-	RawName           string   // Original skill name as found in text
-	AlternativeNames  []string // Alternative names found in context
-	RequirementLevel  string   // "required" or "preferred"
-	Evidence          string   // Evidence text supporting this skill
+	RawName          string   // Original skill name as found in text
+	AlternativeNames []string // Alternative names found in context
+	RequirementLevel string   // "required" or "preferred"
+	Evidence         string   // Evidence text supporting this skill
 }
 
 // NormalizedSkill represents a skill after normalization and taxonomy matching
 type NormalizedSkill struct {
-	RawName           string          // Original skill name as found in text
-	NormalizedName    string          // Standardized skill name
-	Capability        *models.Capability // Matched capability from taxonomy
-	Confidence        float64         // Confidence in the match (0.0-1.0)
-	RequirementLevel  string          // "required" or "preferred"
-	Evidence          string          // Evidence text supporting this skill
-	AlternativeNames  []string        // Alternative names found in context
+	RawName          string             // Original skill name as found in text
+	NormalizedName   string             // Standardized skill name
+	Capability       *models.Capability // Matched capability from taxonomy
+	Confidence       float64            // Confidence in the match (0.0-1.0)
+	RequirementLevel string             // "required" or "preferred"
+	Evidence         string             // Evidence text supporting this skill
+	AlternativeNames []string           // Alternative names found in context
 }
