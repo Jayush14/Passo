@@ -23,7 +23,7 @@ func NewJobSoftSkillRepository(db *pgxpool.Pool) *JobSoftSkillRepository {
 func (r *JobSoftSkillRepository) Insert(ctx context.Context, jobSoftSkill *models.JobSoftSkill) (uuid.UUID, error) {
 	query := `
 		INSERT INTO job_soft_skills
-			(id, job_posting_id, soft_skill_id, proficiency, created_at, updated_at)
+			(id, job_id, soft_skill_id, proficiency, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id
 	`
@@ -31,7 +31,7 @@ func (r *JobSoftSkillRepository) Insert(ctx context.Context, jobSoftSkill *model
 	var id uuid.UUID
 	err := r.db.QueryRow(ctx, query,
 		jobSoftSkill.ID,
-		jobSoftSkill.JobPostingID,
+		jobSoftSkill.JobID,
 		jobSoftSkill.SoftSkillID,
 		jobSoftSkill.Proficiency,
 		jobSoftSkill.CreatedAt,
@@ -44,7 +44,7 @@ func (r *JobSoftSkillRepository) Insert(ctx context.Context, jobSoftSkill *model
 // GetByID retrieves a job soft skill by its ID
 func (r *JobSoftSkillRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.JobSoftSkill, error) {
 	query := `
-		SELECT id, job_posting_id, soft_skill_id, proficiency, created_at, updated_at
+		SELECT id, job_id, soft_skill_id, proficiency, created_at, updated_at
 		FROM job_soft_skills
 		WHERE id = $1
 	`
@@ -52,7 +52,7 @@ func (r *JobSoftSkillRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 	var jobSoftSkill models.JobSoftSkill
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&jobSoftSkill.ID,
-		&jobSoftSkill.JobPostingID,
+		&jobSoftSkill.JobID,
 		&jobSoftSkill.SoftSkillID,
 		&jobSoftSkill.Proficiency,
 		&jobSoftSkill.CreatedAt,
@@ -66,12 +66,12 @@ func (r *JobSoftSkillRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 	return &jobSoftSkill, nil
 }
 
-// ListByJobPostingID returns all soft skills for a given job posting
-func (r *JobSoftSkillRepository) ListByJobPostingID(ctx context.Context, jobPostingID uuid.UUID) ([]*models.JobSoftSkill, error) {
+// ListByJobID returns all soft skills for a given job
+func (r *JobSoftSkillRepository) ListByJobID(ctx context.Context, jobID uuid.UUID) ([]*models.JobSoftSkill, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, job_posting_id, soft_skill_id, proficiency, created_at, updated_at
+		SELECT id, job_id, soft_skill_id, proficiency, created_at, updated_at
 		FROM job_soft_skills
-		WHERE job_posting_id = $1
+		WHERE job_id = $1
 		ORDER BY proficiency DESC
 	`)
 	if err != nil {
@@ -84,7 +84,7 @@ func (r *JobSoftSkillRepository) ListByJobPostingID(ctx context.Context, jobPost
 		var jobSoftSkill models.JobSoftSkill
 		if err := rows.Scan(
 			&jobSoftSkill.ID,
-			&jobSoftSkill.JobPostingID,
+			&jobSoftSkill.JobID,
 			&jobSoftSkill.SoftSkillID,
 			&jobSoftSkill.Proficiency,
 			&jobSoftSkill.CreatedAt,
@@ -98,13 +98,13 @@ func (r *JobSoftSkillRepository) ListByJobPostingID(ctx context.Context, jobPost
 	return jobSoftSkills, rows.Err()
 }
 
-// ListBySoftSkillID returns all job postings that require a given soft skill
+// ListBySoftSkillID returns all jobs that require a given soft skill
 func (r *JobSoftSkillRepository) ListBySoftSkillID(ctx context.Context, softSkillID uuid.UUID) ([]*models.JobSoftSkill, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, job_posting_id, soft_skill_id, proficiency, created_at, updated_at
+		SELECT id, job_id, soft_skill_id, proficiency, created_at, updated_at
 		FROM job_soft_skills
 		WHERE soft_skill_id = $1
-		ORDER BY job_posting_id
+		ORDER BY job_id
 	`)
 	if err != nil {
 		return nil, err
@@ -116,7 +116,7 @@ func (r *JobSoftSkillRepository) ListBySoftSkillID(ctx context.Context, softSkil
 		var jobSoftSkill models.JobSoftSkill
 		if err := rows.Scan(
 			&jobSoftSkill.ID,
-			&jobSoftSkill.JobPostingID,
+			&jobSoftSkill.JobID,
 			&jobSoftSkill.SoftSkillID,
 			&jobSoftSkill.Proficiency,
 			&jobSoftSkill.CreatedAt,
@@ -134,7 +134,7 @@ func (r *JobSoftSkillRepository) ListBySoftSkillID(ctx context.Context, softSkil
 func (r *JobSoftSkillRepository) Update(ctx context.Context, jobSoftSkill *models.JobSoftSkill) error {
 	query := `
 		UPDATE job_soft_skills
-		SET job_posting_id = $2,
+		SET job_id = $2,
 		    soft_skill_id = $3,
 		    proficiency = $4,
 		    updated_at = $5
@@ -143,7 +143,7 @@ func (r *JobSoftSkillRepository) Update(ctx context.Context, jobSoftSkill *model
 
 	_, err := r.db.Exec(ctx, query,
 		jobSoftSkill.ID,
-		jobSoftSkill.JobPostingID,
+		jobSoftSkill.JobID,
 		jobSoftSkill.SoftSkillID,
 		jobSoftSkill.Proficiency,
 		jobSoftSkill.UpdatedAt,
@@ -163,13 +163,13 @@ func (r *JobSoftSkillRepository) Delete(ctx context.Context, id uuid.UUID) error
 	return err
 }
 
-// DeleteByJobPostingID removes all job soft skills for a given job posting
-func (r *JobSoftSkillRepository) DeleteByJobPostingID(ctx context.Context, jobPostingID uuid.UUID) error {
+// DeleteByJobID removes all job soft skills for a given job
+func (r *JobSoftSkillRepository) DeleteByJobID(ctx context.Context, jobID uuid.UUID) error {
 	query := `
 		DELETE FROM job_soft_skills
-		WHERE job_posting_id = $1
+		WHERE job_id = $1
 	`
 
-	_, err := r.db.Exec(ctx, query, jobPostingID)
+	_, err := r.db.Exec(ctx, query, jobID)
 	return err
 }

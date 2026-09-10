@@ -66,6 +66,31 @@ func (r *JobTitleRepository) GetByID(ctx context.Context, id uuid.UUID) (*models
 	return &jobTitle, nil
 }
 
+// GetByCanonicalName retrieves a job title by its canonical title.
+func (r *JobTitleRepository) GetByCanonicalName(ctx context.Context, canonicalTitle string) (*models.JobTitle, error) {
+	query := `
+		SELECT id, title, normalized_title, taxonomy_version, created_at, updated_at
+		FROM job_titles
+		WHERE normalized_title = $1
+	`
+
+	var jobTitle models.JobTitle
+	err := r.db.QueryRow(ctx, query, canonicalTitle).Scan(
+		&jobTitle.ID,
+		&jobTitle.Title,
+		&jobTitle.NormalizedTitle,
+		&jobTitle.TaxonomyVersion,
+		&jobTitle.CreatedAt,
+		&jobTitle.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &jobTitle, nil
+}
+
 // List returns all job titles
 func (r *JobTitleRepository) List(ctx context.Context) ([]*models.JobTitle, error) {
 	rows, err := r.db.Query(ctx, `

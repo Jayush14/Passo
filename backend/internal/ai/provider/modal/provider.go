@@ -53,6 +53,7 @@ func New(apiKey, model string) contract.TextGenerator {
 
 // GenerateText calls the Modal API and returns the generated text.
 func (p *modalProvider) GenerateText(ctx context.Context, prompt string) (string, error) {
+	fmt.Printf("Modal provider: Generating text for prompt: %s\n", prompt)
 	if prompt == "" {
 		return "", errors.New("empty prompt")
 	}

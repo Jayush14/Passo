@@ -76,6 +76,36 @@ func (r *LocationRepository) GetByID(ctx context.Context, id uuid.UUID) (*models
 	return &location, nil
 }
 
+// GetByCityStateCountry retrieves a location by its city, state, and country.
+func (r *LocationRepository) GetByCityStateCountry(ctx context.Context, city, state, country string) (*models.Location, error) {
+	query := `
+		SELECT id, city, state, country, country_code, lat, lon,
+		       taxonomy_version, created_at, updated_at
+		FROM locations
+		WHERE city = $1 AND state = $2 AND country = $3
+	`
+
+	var location models.Location
+	err := r.db.QueryRow(ctx, query, city, state, country).Scan(
+		&location.ID,
+		&location.City,
+		&location.State,
+		&location.Country,
+		&location.CountryCode,
+		&location.Lat,
+		&location.Lon,
+		&location.TaxonomyVersion,
+		&location.CreatedAt,
+		&location.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &location, nil
+}
+
 // List returns all locations
 func (r *LocationRepository) List(ctx context.Context) ([]*models.Location, error) {
 	rows, err := r.db.Query(ctx, `

@@ -63,6 +63,7 @@ func RouterWithMDEHandler(mdeHandler *handlers.ProcessingHandler) *http.ServeMux
 		mux.HandleFunc("POST /mde/process/start", middleware(authMiddleware(mdeHandler.StartProcessing)))
 		mux.HandleFunc("POST /mde/process/stop", middleware(authMiddleware(mdeHandler.StopProcessing)))
 		mux.HandleFunc("GET /mde/process/status", middleware(authMiddleware(mdeHandler.GetProcessingStatus)))
+		mux.HandleFunc("POST /mde/process/normalize", middleware(authMiddleware(mdeHandler.HandleNormalizeBatch)))
 	}
 
 	// Notification routes (require auth)

@@ -3,8 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"passo/backend/internal/plugins/market-data-engine/processing"
+	"log"
 )
 
 // ProcessingHandler handles HTTP requests for market data engine processing
@@ -29,11 +31,14 @@ func NewProcessingHandler(workerPool *processing.WorkerPool) *ProcessingHandler 
 // @Failure 500 {object} map[string]string
 // @Router /api/v1/mde/process/start [post]
 func (h *ProcessingHandler) StartProcessing(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[INFO] HandleStartProcessing: received request")
 	if err := h.workerPool.Start(r.Context()); err != nil {
+		log.Printf("[ERROR] HandleStartProcessing: failed to start worker pool: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
+	log.Printf("[INFO] HandleStartProcessing: worker pool started successfully")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "MDE processing started"})
 }
 
@@ -47,7 +52,9 @@ func (h *ProcessingHandler) StartProcessing(w http.ResponseWriter, r *http.Reque
 // @Failure 500 {object} map[string]string
 // @Router /api/v1/mde/process/stop [post]
 func (h *ProcessingHandler) StopProcessing(w http.ResponseWriter, _ *http.Request) {
+	log.Printf("[INFO] HandleStopProcessing: received request")
 	h.workerPool.Stop()
+	log.Printf("[INFO] HandleStopProcessing: worker pool stopping")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "MDE processing stopped"})
 }
 
@@ -60,9 +67,41 @@ func (h *ProcessingHandler) StopProcessing(w http.ResponseWriter, _ *http.Reques
 // @Success 200 {object} map[string]interface{}
 // @Router /api/v1/mde/process/status [get]
 func (h *ProcessingHandler) GetProcessingStatus(w http.ResponseWriter, _ *http.Request) {
+	log.Printf("[DEBUG] HandleGetProcessingStatus: received request")
+	running := h.workerPool.IsRunning()
+	log.Printf("[DEBUG] HandleGetProcessingStatus: worker pool running=%v", running)
 	writeJSON(w, http.StatusOK, map[string]bool{
-		"running": h.workerPool.IsRunning(),
+		"running": running,
 	})
+}
+
+// HandleNormalizeBatch processes a batch of pending extractions on demand.
+// @Summary Process a batch of MDE extractions
+// @Description Triggers the worker pool to process a batch of pending job extractions and returns the number processed.
+// @Tags processing
+// @Accept json
+// @Produce json
+// @Produce json
+// @Param batchSize query int false "Batch size (optional, defaults to config)"
+// @Success 200 {object} map[string]int
+// @Failure 500 {object} map[string]string
+// @Router /mde/process/normalize [post]
+func (h *ProcessingHandler) HandleNormalizeBatch(w http.ResponseWriter, r *http.Request) {
+	batchSize := h.workerPool.Config().BatchSize
+	if v := r.URL.Query().Get("batchSize"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			batchSize = n
+		}
+	}
+	log.Printf("[INFO] HandleNormalizeBatch: received request (batchSize=%d)", batchSize)
+	processed, err := h.workerPool.ProcessPendingExtractions(r.Context(), batchSize)
+	if err != nil {
+		log.Printf("[ERROR] HandleNormalizeBatch: failed to process batch: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[INFO] HandleNormalizeBatch: processed %d extractions", processed)
+	writeJSON(w, http.StatusOK, map[string]int{"processed": processed})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

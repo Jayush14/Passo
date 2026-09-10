@@ -28,4 +28,6 @@ type JobPosting struct {
 	TotalSkillsCount int    `json:"total_skills_count"`
 	MatchScore      float64   `json:"match_score"`
 	Status          string    `json:"status"`
+	// DedupKey is used for deduplication of job postings
+	DedupKey        string    `json:"dedup_key,omitempty"`
 }

@@ -66,6 +66,31 @@ func (r *SeniorityLevelRepository) GetByID(ctx context.Context, id uuid.UUID) (*
 	return &seniorityLevel, nil
 }
 
+// GetByCanonicalName retrieves a seniority level by its canonical name.
+func (r *SeniorityLevelRepository) GetByCanonicalName(ctx context.Context, canonicalName string) (*models.SeniorityLevel, error) {
+	query := `
+		SELECT id, level, normalized_level, taxonomy_version, created_at, updated_at
+		FROM seniority_levels
+		WHERE normalized_level = $1
+	`
+
+	var seniorityLevel models.SeniorityLevel
+	err := r.db.QueryRow(ctx, query, canonicalName).Scan(
+		&seniorityLevel.ID,
+		&seniorityLevel.Level,
+		&seniorityLevel.NormalizedLevel,
+		&seniorityLevel.TaxonomyVersion,
+		&seniorityLevel.CreatedAt,
+		&seniorityLevel.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &seniorityLevel, nil
+}
+
 // List returns all seniority levels
 func (r *SeniorityLevelRepository) List(ctx context.Context) ([]*models.SeniorityLevel, error) {
 	rows, err := r.db.Query(ctx, `

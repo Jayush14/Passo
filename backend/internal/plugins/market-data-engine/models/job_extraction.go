@@ -9,6 +9,7 @@ import (
 type JobExtraction struct {
 	ID          uuid.UUID `json:"id"`
 	JobID       uuid.UUID `json:"job_id"`
+	RawResponse []byte    `json:"raw_response,omitempty"`
 	RawContent  string    `json:"raw_content"`
 	Language    string    `json:"language"`
 	CreatedAt   time.Time `json:"created_at"`

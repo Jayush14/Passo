@@ -66,6 +66,31 @@ func (r *WorkModeRepository) GetByID(ctx context.Context, id uuid.UUID) (*models
 	return &workMode, nil
 }
 
+// GetByCanonicalName retrieves a work mode by its canonical name.
+func (r *WorkModeRepository) GetByCanonicalName(ctx context.Context, canonicalName string) (*models.WorkMode, error) {
+	query := `
+		SELECT id, mode, normalized_mode, taxonomy_version, created_at, updated_at
+		FROM work_modes
+		WHERE mode = $1
+	`
+
+	var workMode models.WorkMode
+	err := r.db.QueryRow(ctx, query, canonicalName).Scan(
+		&workMode.ID,
+		&workMode.Mode,
+		&workMode.NormalizedMode,
+		&workMode.TaxonomyVersion,
+		&workMode.CreatedAt,
+		&workMode.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &workMode, nil
+}
+
 // List returns all work modes
 func (r *WorkModeRepository) List(ctx context.Context) ([]*models.WorkMode, error) {
 	rows, err := r.db.Query(ctx, `

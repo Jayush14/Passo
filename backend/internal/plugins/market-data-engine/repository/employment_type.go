@@ -66,6 +66,31 @@ func (r *EmploymentTypeRepository) GetByID(ctx context.Context, id uuid.UUID) (*
 	return &employmentType, nil
 }
 
+// GetByCanonicalName retrieves an employment type by its canonical name.
+func (r *EmploymentTypeRepository) GetByCanonicalName(ctx context.Context, canonicalName string) (*models.EmploymentType, error) {
+	query := `
+		SELECT id, type, normalized_type, taxonomy_version, created_at, updated_at
+		FROM employment_types
+		WHERE type = $1
+	`
+
+	var employmentType models.EmploymentType
+	err := r.db.QueryRow(ctx, query, canonicalName).Scan(
+		&employmentType.ID,
+		&employmentType.Type,
+		&employmentType.NormalizedType,
+		&employmentType.TaxonomyVersion,
+		&employmentType.CreatedAt,
+		&employmentType.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &employmentType, nil
+}
+
 // List returns all employment types
 func (r *EmploymentTypeRepository) List(ctx context.Context) ([]*models.EmploymentType, error) {
 	rows, err := r.db.Query(ctx, `
