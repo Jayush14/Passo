@@ -96,6 +96,12 @@ func HandleProcessJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	userID, ok := userIDVal.(int64)
+	if !ok {
+		log.Printf("HandleProcessJob: ERROR - Invalid user ID in context")
+		http.Error(w, "invalid user ID", http.StatusBadRequest)
+		return
+	}
 
 	// Process the job using the reusable ProcessJobDetails function
 	combinedObject, jobID, err := ProcessJobDetails(
@@ -111,6 +117,7 @@ func HandleProcessJob(w http.ResponseWriter, r *http.Request) {
 		req.Provider,
 		req.Model,
 		req.JobDescription,
+		userID,
 	)
 	if err != nil {
 		log.Printf("HandleProcessJob: ERROR - Failed to process job: %v", err)
@@ -182,6 +189,30 @@ func checkNaukriJobExists(ctx context.Context, dbInst *db.DB, naukriJobID string
 // and source-specific IDs, handles LLM processing to extract full job information
 // (skills, responsibilities, soft skills, domain knowledge, seniority, experience)
 // from the description, combines with provided fields, and saves to the job_extractions table.
+func normalizeProviderAndModel(providerName string, model string) (string, string) {
+	providerName = strings.ToLower(strings.TrimSpace(providerName))
+	if providerName == "" {
+		providerName = "gemini"
+	}
+
+	switch providerName {
+	case "gemini":
+		if model == "" {
+			model = "gemini-3.0-flash"
+		}
+	case "modal":
+		if model == "" {
+			model = "zai-org/GLM-5.3"
+		}
+	default:
+		if model == "" {
+			model = "gemini-2.0-flash"
+		}
+	}
+
+	return providerName, model
+}
+
 func ProcessJobDetails(
 	ctx context.Context,
 	title string,
@@ -195,35 +226,42 @@ func ProcessJobDetails(
 	aiProvider string,
 	model string,
 	jobDescription string,
+	user_id int64,
 ) (map[string]interface{}, string, error) {
-	log.Printf("ProcessJobDetails: START - Processing job with provider %s and model %s", aiProvider, model)
-
-	// Validate job description
+	// Validate job description first.
 	if jobDescription == "" {
 		return nil, "", fmt.Errorf("job description is required for processing")
 	}
 
-	// Retrieve user ID from context (set by auth middleware).
-	userIDVal := ctx.Value("userID")
-	if userIDVal == nil {
-		return nil, "", fmt.Errorf("unauthorized request")
-	}
-	userID, ok := userIDVal.(int64)
-	if !ok {
-		return nil, "", fmt.Errorf("invalid user ID in context")
+	// Prefer the explicit user id argument that comes from the DB record for batch jobs.
+	// The background context used by workers often does not contain the auth value.
+	resolvedUserID := user_id
+	if resolvedUserID == 0 {
+		userIDVal := ctx.Value("userID")
+		if userIDVal == nil {
+			return nil, "", fmt.Errorf("unauthorized request")
+		}
+		userID, ok := userIDVal.(int64)
+		if !ok {
+			return nil, "", fmt.Errorf("invalid user ID in context")
+		}
+		resolvedUserID = userID
 	}
 
-	// Get encrypted API key from database for the specific provider.
+	aiProvider, model = normalizeProviderAndModel(aiProvider, model)
+	log.Printf("ProcessJobDetails: START - Processing job with provider %s and model %s for user %d", aiProvider, model, resolvedUserID)
+
 	if dbInst == nil {
 		return nil, "", fmt.Errorf("database not initialized")
 	}
-	encryptedKey, err := dbInst.GetAPIKey(ctx, userID, aiProvider)
+	encryptedKey, err := dbInst.GetAPIKey(ctx, resolvedUserID, aiProvider)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, "", fmt.Errorf("API key not found for user %d and provider %s", userID, aiProvider)
+			return nil, "", fmt.Errorf("API key not found for user %d and provider %s", resolvedUserID, aiProvider)
 		}
 		return nil, "", fmt.Errorf("could not retrieve API key: %w", err)
 	}
+	log.Printf("ProcessJobDetails: Retrieved API key for user %d and provider %s", resolvedUserID, aiProvider)
 
 	// Decrypt the API key.
 	apiKey, err := apikey.Decrypt(encryptedKey)
@@ -487,7 +525,7 @@ func processSingleJob(ctx context.Context, job batchJob, dbInst *db.DB) (string,
 		return "", err
 	}
 
-	fmt.Printf("processSingleJob: Processing job %s with provider %s and model %s\n", job.JobID, job.Provider, job.Model, "Prompt: ", prompt)
+	fmt.Printf("processSingleJob: Processing job %s with provider %s and model %s\nPrompt: %s\n", job.JobID, job.Provider, job.Model, prompt)
 	// Call the LLM
 	generatedText, err := gen.GenerateText(ctx, prompt)
 
@@ -711,6 +749,7 @@ func maybeUpdateBatchStatus(ctx context.Context, batchID string, userID int64, d
 
 // workerFn processes jobs from the channel, respecting the LLM semaphore.
 func workerFn(
+	ctx context.Context,
 	jobs <-chan batchJob,
 	batchID string,
 	userID int64,
@@ -726,26 +765,27 @@ func workerFn(
 			Title              string
 			Company            string
 			Location           string
-			EmploymentType     string
-			WorkMode           string
+			employment_type    string
+			work_mode          string
 			Seniority          string
 			ExperienceMinYears *int
 			ExperienceMaxYears *int
 			LinkedinJobID      string
 			NaukriJobID        string
 			Source             string
+			user_id            int64
 		}
 		err := dbInst.QueryRowContext(context.Background(), `
 			SELECT job_description, provider, model,
 				title, company, location, employment_type, work_mode, seniority,
 				min_years, max_years,
-				linkedin_job_id, naukri_job_id, source
+				linkedin_job_id, naukri_job_id, source, user_id
 			FROM job_staging
 			WHERE id = $1 AND batch_id = $2
 		`, job.JobID, batchID).Scan(&jobData.JobDescription, &jobData.Provider, &jobData.Model,
-			&jobData.Title, &jobData.Company, &jobData.Location, &jobData.EmploymentType, &jobData.WorkMode, &jobData.Seniority,
+			&jobData.Title, &jobData.Company, &jobData.Location, &jobData.employment_type, &jobData.work_mode, &jobData.Seniority,
 			&jobData.ExperienceMinYears, &jobData.ExperienceMaxYears,
-			&jobData.LinkedinJobID, &jobData.NaukriJobID, &jobData.Source)
+			&jobData.LinkedinJobID, &jobData.NaukriJobID, &jobData.Source, &jobData.user_id)
 		if err != nil {
 			log.Printf("batch %s job %s: failed to fetch job data from staging: %v", batchID, job.JobID, err)
 			// Update job staging status to failed
@@ -755,6 +795,8 @@ func workerFn(
 			continue
 		}
 
+		_, err = dbInst.GetAPIKey(context.Background(), jobData.user_id, jobData.Provider)
+		log.Printf("batch %s job %s: retrieved API key for provider %s for user %d", batchID, job.JobID, jobData.Provider, jobData.user_id)
 		// log.Printf("batch %s job %s: moving from waiting to in progress", batchID, job.JobID)
 		// Move job from waiting to in progress in staging table
 		if err := updateJobStagingStatus(context.Background(), job.JobID, batchID, "inprogress", dbInst); err != nil {
@@ -767,31 +809,47 @@ func workerFn(
 		// log.Printf("batch %s job %s: acquired LLM token, starting processing", batchID, job.JobID)
 
 		// Create a temporary batchJob with the actual data from the database
-		dbJob := batchJob{
-			JobDescription:     jobData.JobDescription,
-			Provider:           jobData.Provider,
-			Model:              jobData.Model,
-			Title:              jobData.Title,
-			Company:            jobData.Company,
-			Location:           jobData.Location,
-			EmploymentType:     jobData.EmploymentType,
-			WorkMode:           jobData.WorkMode,
-			Seniority:          jobData.Seniority,
-			ExperienceMinYears: jobData.ExperienceMinYears,
-			ExperienceMaxYears: jobData.ExperienceMaxYears,
-			LinkedinJobID:      jobData.LinkedinJobID,
-			NaukriJobID:        jobData.NaukriJobID,
-			Source:             jobData.Source,
-			UserID:             userID,
-			BatchID:            batchID,
-			JobID:              job.JobID,
-		}
+		// dbJob := batchJob{
+		// 	JobDescription:     jobData.JobDescription,
+		// 	Provider:           jobData.Provider,
+		// 	Model:              jobData.Model,
+		// 	Title:              jobData.Title,
+		// 	Company:            jobData.Company,
+		// 	Location:           jobData.Location,
+		// 	EmploymentType:     jobData.employment_type,
+		// 	WorkMode:           jobData.work_mode,
+		// 	Seniority:          jobData.Seniority,
+		// 	ExperienceMinYears: jobData.ExperienceMinYears,
+		// 	ExperienceMaxYears: jobData.ExperienceMaxYears,
+		// 	LinkedinJobID:      jobData.LinkedinJobID,
+		// 	NaukriJobID:        jobData.NaukriJobID,
+		// 	Source:             jobData.Source,
+		// 	UserID:             jobData.user_id,
+		// 	BatchID:            batchID,
+		// 	JobID:              job.JobID,
+		// }
 
-		generatedText, err := processSingleJob(context.Background(), dbJob, dbInst)
+		// generatedText, err := processSingleJob(context.Background(), dbJob, dbInst)
+		generatedText, _, err := ProcessJobDetails(
+			context.Background(),
+			jobData.Title,
+			jobData.Company,
+			jobData.Location,
+			jobData.employment_type,
+			jobData.work_mode,
+			jobData.LinkedinJobID,
+			jobData.NaukriJobID,
+			jobData.Source,
+			jobData.Provider,
+			jobData.Model,
+			jobData.JobDescription,
+			jobData.user_id,
+		)
 		// log.Printf("batch %s job %s: finished LLM processing", batchID, job.JobID)
 		<-llmLimiter // release token
 		// log.Printf("batch %s job %s: released LLM token", batchID, job.JobID)
 
+		fmt.Printf("batch %s job %s: generated text length: %d\n", batchID, job.JobID, len(generatedText))
 		if err != nil {
 			log.Printf("batch %s job %s failed: %v", batchID, job.JobID, err)
 			// Update job staging status to failed
@@ -803,30 +861,30 @@ func workerFn(
 				log.Printf("failed to update job staging raw_json with error: %v", updateErr)
 			}
 			// Check if batch is done after this failure
-			if err := maybeUpdateBatchStatus(context.Background(), batchID, userID, dbInst); err != nil {
+			if err := maybeUpdateBatchStatus(context.Background(), batchID, jobData.user_id, dbInst); err != nil {
 				log.Printf("failed to maybe update batch status: %v", err)
 			}
 			continue
 		}
 		// Success path – insert raw response in background and update staging
 		// log.Printf("batch %s job %s: saving raw response to DB", batchID, job.JobID)
-		go func() {
-			ctx := context.Background()
-			_, err := dbInst.ExecContext(ctx, `
-				INSERT INTO job_extractions
-					(id, job_id, provider, model, prompt_version, raw_response, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`, dbJob.JobID, dbJob.JobID, dbJob.Provider, dbJob.Model, "v1", generatedText, time.Now())
-			if err != nil {
-				log.Printf("failed to save job extraction: %v", err)
-			}
-		}()
+		// go func() {
+		// 	ctx := context.Background()
+		// 	_, err := dbInst.ExecContext(ctx, `
+		// 		INSERT INTO job_extractions
+		// 			(id, job_id, provider, model, prompt_version, raw_response, created_at)
+		// 		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		// 	`, dbJob.JobID, dbJob.JobID, dbJob.Provider, dbJob.Model, "v1", generatedText, time.Now())
+		// 	if err != nil {
+		// 		log.Printf("failed to save job extraction: %v", err)
+		// 	}
+		// }()
 		// Update job staging status to completed and store raw response
-		if err := updateJobStagingStatusAndResponse(context.Background(), job.JobID, batchID, "completed", generatedText, dbInst); err != nil {
+		if err := updateJobStagingStatusAndResponse(context.Background(), job.JobID, batchID, "completed", "", dbInst); err != nil {
 			log.Printf("failed to update job staging status and raw_json: %v", err)
 		}
 		// Check if batch is done after this success
-		if err := maybeUpdateBatchStatus(context.Background(), batchID, userID, dbInst); err != nil {
+		if err := maybeUpdateBatchStatus(context.Background(), batchID, jobData.user_id, dbInst); err != nil {
 			log.Printf("failed to maybe update batch status: %v", err)
 		}
 	}
@@ -944,7 +1002,8 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Create batch record with actual number of new jobs to process
 	batchID := uuid.New().String()
-	_, err := dbInst.ExecContext(r.Context(), `
+	batchCtx := context.WithValue(r.Context(), "userID", userID)
+	_, err := dbInst.ExecContext(batchCtx, `
 		INSERT INTO job_batches
 			(batch_id, user_id, total_jobs, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -959,16 +1018,8 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 	stagedJobIDs := make([]string, 0, savedCount)
 	for _, j := range newJobs {
 		jobID := uuid.New().String()
-		// Set default provider and model if not specified
-		var provider = j.Provider
-		if provider == "" {
-			provider = "gemini"
-		}
-		var model = j.Model
-		if model == "" {
-			model = "gemini-2.0-flash"
-		}
-		_, err := dbInst.ExecContext(r.Context(), `
+		provider, model := normalizeProviderAndModel(j.Provider, j.Model)
+		_, err := dbInst.ExecContext(batchCtx, `
 			INSERT INTO job_staging
 				(id, batch_id, user_id, provider, model, job_description,
 				 linkedin_job_id, naukri_job_id, source, title, company, location,
@@ -979,13 +1030,13 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 				if j.LinkedinJobID != "" {
 					return j.LinkedinJobID
 				}
-				return nil
+				return ""
 			}(),
 			func() interface{} {
 				if j.NaukriJobID != "" {
 					return j.NaukriJobID
 				}
-				return nil
+				return ""
 			}(),
 			j.Source,
 			j.Title,
@@ -1007,8 +1058,8 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 		stagedJobIDs = append(stagedJobIDs, jobID)
 	}
 
-	// Create a cancellable context for this batch
-	ctx, cancel := context.WithCancel(context.Background())
+	// Create a cancellable context for this batch while preserving the authenticated user ID.
+	ctx, cancel := context.WithCancel(batchCtx)
 	// Store the cancel function so we can stop the batch later
 	batchCancels.Store(batchID, cancel)
 
@@ -1033,7 +1084,7 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Start workers
 	for i := 0; i < workerCount; i++ {
-		go workerFn(jobChan, batchID, userID, dbInst, llmLimiter)
+		go workerFn(ctx, jobChan, batchID, userID, dbInst, llmLimiter)
 	}
 
 	// Sender goroutine: sends jobs unless stop is requested

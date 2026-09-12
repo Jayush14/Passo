@@ -197,7 +197,7 @@ func HandleGenerate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "API key not found for user", http.StatusUnauthorized)
 			return
 		}
-		log.Printf("[ERROR: Agent failed (Function process_single_item_agent timed out after 90.0 seconds), API failed (API request returned None after all retries)]", userID, req.Provider)
+		log.Printf("[ERROR: Agent failed (Function process_single_item_agent timed out after 90.0 seconds), API failed (API request returned None after all retries)] user_id=%d provider=%s", userID, req.Provider)
 		http.Error(w, "could not retrieve API key", http.StatusInternalServerError)
 		return
 	}
