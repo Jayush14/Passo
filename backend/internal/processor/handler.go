@@ -96,309 +96,37 @@ func HandleProcessJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	userID, ok := userIDVal.(int64)
-	if !ok {
-		log.Printf("HandleProcessJob: ERROR - Invalid user ID in context")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 
-	// Get encrypted API key from database for the specific provider.
-	if dbInst == nil {
-		log.Printf("HandleProcessJob: ERROR - Database not initialized")
-		http.Error(w, "database not initialized", http.StatusInternalServerError)
-		return
-	}
-	encryptedKey, err := dbInst.GetAPIKey(r.Context(), userID, req.Provider)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			log.Printf("HandleProcessJob: ERROR - API key not found for user %d and provider %s", userID, req.Provider)
-			http.Error(w, "API key not found for user and provider", http.StatusUnauthorized)
-			return
-		}
-		log.Printf("HandleProcessJob: ERROR - Could not retrieve API key: %v", err)
-		http.Error(w, "could not retrieve API key", http.StatusInternalServerError)
-		return
-	}
-
-	// Decrypt the API key.
-	apiKey, err := apikey.Decrypt(encryptedKey)
-	if err != nil {
-		log.Printf("HandleProcessJob: ERROR - Decryption failed: %v", err)
-		http.Error(w, "decryption failed", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("HandleProcessJob: Decrypted API key retrieved successfully")
-
-	// Check for duplicate using source-specific IDs if provided
-	if req.LinkedinJobID != "" || req.NaukriJobID != "" {
-		var exists bool
-		var checkErr error
-		if req.LinkedinJobID != "" {
-			log.Printf("HandleProcessJob: Checking for duplicate LinkedIn job ID: %s", req.LinkedinJobID)
-			exists, checkErr = checkLinkedinJobExists(r.Context(), dbInst, req.LinkedinJobID)
-		} else {
-			log.Printf("HandleProcessJob: Checking for duplicate Naukri job ID: %s", req.NaukriJobID)
-			exists, checkErr = checkNaukriJobExists(r.Context(), dbInst, req.NaukriJobID)
-		}
-		if checkErr != nil {
-			log.Printf("HandleProcessJob: ERROR - Failed to check for duplicate job: %v", checkErr)
-			http.Error(w, fmt.Sprintf("failed to check for duplicate job: %v", checkErr), http.StatusInternalServerError)
-			return
-		}
-		if exists {
-			log.Printf("HandleProcessJob: Duplicate job found - %s", func() string {
-				if req.LinkedinJobID != "" {
-					return "LinkedIn ID: " + req.LinkedinJobID
-				} else {
-					return "Naukri ID: " + req.NaukriJobID
-				}
-			}())
-			// Return duplicate response
-			response := ProcessJobResponse{
-				Success: false,
-				Message: "Job already exists (duplicate)",
-				JobID:   "", // No new job created
-				Data:    map[string]string{"duplicate": "true"},
-			}
-			responseBytes, err := json.Marshal(response)
-			if err != nil {
-				log.Printf("HandleProcessJob: ERROR - Failed to encode duplicate response: %v", err)
-				http.Error(w, "failed to encode response", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(responseBytes)
-			return
-		}
-		log.Printf("HandleProcessJob: No duplicate found for job")
-	}
-
-	// Create AI provider for LLM extraction (only for skills/responsibilities from description)
-	gen, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
-	if err != nil {
-		log.Printf("HandleProcessJob: ERROR - Failed to create AI provider: %v", err)
-		http.Error(w, fmt.Sprintf("unsupported provider %s: %v", req.Provider, err), http.StatusBadGateway)
-		return
-	}
-
-	// Build prompt for skills extraction using the new template (only processes description)
-	promptData := map[string]string{
-		"Description": req.JobDescription,
-	}
-	prompt, err := prompts.RenderTemplate("job_skills_extraction", promptData)
-	if err != nil {
-		log.Printf("HandleProcessJob: ERROR - Failed to render job skills extraction template: %v", err)
-		http.Error(w, fmt.Sprintf("failed to render job skills extraction template: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Generate skills/responsibilities/etc. from description ONLY
-	log.Printf("HandleProcessJob: Calling LLM for skills extraction")
-	generatedText, err := gen.GenerateText(r.Context(), prompt)
-	if err != nil {
-		log.Printf("HandleProcessJob: ERROR - Failed to generate text: %v", err)
-		http.Error(w, fmt.Sprintf("failed to generate text: %v", err), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("HandleProcessJob: LLM generation successful, response length: %d", len(generatedText))
-
-	// Extract JSON object from the LLM output
-	jsonStr := strings.TrimSpace(generatedText)
-	startIdx := strings.Index(jsonStr, "{")
-	endIdx := strings.LastIndex(jsonStr, "}")
-	if startIdx == -1 || endIdx == -1 || endIdx < startIdx {
-		log.Printf("HandleProcessJob: ERROR - No JSON object found in provider response")
-		http.Error(w, "no JSON object found in provider response", http.StatusBadGateway)
-		return
-	}
-	jsonStr = jsonStr[startIdx : endIdx+1]
-
-	// Parse the LLM response to validate it's valid JSON
-	var llmResponse map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &llmResponse); err != nil {
-		log.Printf("HandleProcessJob: ERROR - Failed to parse provider response as JSON: %v", err)
-		http.Error(w, fmt.Sprintf("failed to parse provider response as JSON: %v", err), http.StatusBadGateway)
-		return
-	}
-	log.Printf("HandleProcessJob: LLM response parsed successfully")
-
-	// Create a stable job ID for tracking
-	jobID := uuid.New().String()
-
-	// Build the final combined object with both pre-provided fields and LLM-extracted fields
-	// Format:
-	// {
-	//   "title": {"value": string|null, "confidence": number, "evidence": string|null},
-	//   "company": {"value": string|null, "confidence": number, "evidence": string|null},
-	//   "location": {"city": string|null, "state": string|null, "country": string|null, "confidence": number, "evidence": string|null},
-	//   "employment_type": {"value": "...", "confidence": number, "evidence": string|null},
-	//   "work_mode": {"value": "...", "confidence": number, "evidence": string|null},
-	//   "seniority": {"value": "...", "confidence": number, "evidence": string|null},
-	//   "experience": {"minimum_years": number|null, "maximum_years": number|null, "confidence": number, "evidence": string|null},
-	//   "skills": [...],  // from LLM
-	//   "responsibilities": [...],  // from LLM
-	//   "soft_skills": [...],  // from LLM
-	//   "domain_knowledge": [...]  // from LLM
-	// }
-
-	// Helper function to create a field object with value, confidence, and evidence
-	makeField := func(value string, confidence float64, evidence string) map[string]interface{} {
-		if value == "" {
-			return map[string]interface{}{
-				"value":      nil,
-				"confidence": 0.0,
-				"evidence":   nil,
-			}
-		}
-		return map[string]interface{}{
-			"value":      value,
-			"confidence": confidence,
-			"evidence":   evidence,
-		}
-	}
-
-	// Helper function to safely convert *string to string
-
-	// Helper function to safely convert *int to *int (for JSON marshaling)
-
-	// Helper function to extract city from location string (simple implementation)
-	extractCity := func(location string) string {
-		if location == "" {
-			return ""
-		}
-		// Simple split by comma and take first part as city
-		parts := strings.Split(location, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
-		}
-		return ""
-	}
-
-	// Helper function to extract state from location string (simple implementation)
-	extractState := func(location string) string {
-		if location == "" {
-			return ""
-		}
-		// Simple split by comma and take second part as state if exists
-		parts := strings.Split(location, ",")
-		if len(parts) > 1 {
-			return strings.TrimSpace(parts[1])
-		}
-		return ""
-	}
-
-	// Helper function to extract country from location string (simple implementation)
-	extractCountry := func(location string) string {
-		if location == "" {
-			return ""
-		}
-		// Simple split by comma and take last part as country if exists
-		parts := strings.Split(location, ",")
-		if len(parts) > 2 {
-			return strings.TrimSpace(parts[len(parts)-1])
-		}
-		return ""
-	}
-
-	// Build the final object
-	combinedObject := map[string]interface{}{
-		"title": makeField(
-			req.Title,
-			0.95, // High confidence for pre-provided data
-			fmt.Sprintf("Provided in API request: %s", req.Title),
-		),
-		"company": makeField(
-			req.Company,
-			0.95, // High confidence for pre-provided data
-			fmt.Sprintf("Provided in API request: %s", req.Company),
-		),
-		"location": map[string]interface{}{
-			"city":       extractCity(req.Location),
-			"state":      extractState(req.Location),
-			"country":    extractCountry(req.Location),
-			"confidence": 0.95, // High confidence for pre-provided data
-			"evidence":   fmt.Sprintf("Provided in API request: %s", req.Location),
-		},
-		"employment_type": makeField(
-			req.EmploymentType,
-			0.95, // High confidence for pre-provided data
-			fmt.Sprintf("Provided in API request: %s", req.EmploymentType),
-		),
-		"work_mode": makeField(
-			req.WorkMode,
-			0.95, // High confidence for pre-provided data
-			fmt.Sprintf("Provided in API request: %s", req.WorkMode),
-		),
-		// "seniority": makeField(
-		// 	req.Seniority,
-		// 	0.95, // High confidence for pre-provided data
-		// 	fmt.Sprintf("Provided in API request: %s", req.Seniority),
-		// ),
-		// "experience": map[string]interface{}{
-		// 	"minimum_years": nullableIntToPtr(req.ExperienceMinYears),
-		// 	"maximum_years": nullableIntToPtr(req.ExperienceMaxYears),
-		// 	"confidence":    0.95, // High confidence for pre-provided data
-		// 	"evidence": fmt.Sprintf("Provided in API request: min=%v, max=%v",
-		// 		nullableIntToPtr(req.ExperienceMinYears), nullableIntToPtr(req.ExperienceMaxYears)),
-		// },
-		"skills":           llmResponse["skills"],
-		"responsibilities": llmResponse["responsibilities"],
-		"soft_skills":      llmResponse["soft_skills"],
-		"domain_knowledge": llmResponse["domain_knowledge"],
-		"experience":       llmResponse["experience"],
-		"seniority":        llmResponse["seniority"],
-	}
-
-	// Ensure LLM-extracted fields are present (default to empty arrays if missing)
-	if combinedObject["skills"] == nil {
-		combinedObject["skills"] = []interface{}{}
-	}
-	if combinedObject["responsibilities"] == nil {
-		combinedObject["responsibilities"] = []interface{}{}
-	}
-	if combinedObject["soft_skills"] == nil {
-		combinedObject["soft_skills"] = []interface{}{}
-	}
-	if combinedObject["domain_knowledge"] == nil {
-		combinedObject["domain_knowledge"] = []interface{}{}
-	}
-
-	// Save the combined object to job_extractions table
-	if dbInst == nil {
-		log.Printf("HandleProcessJob: ERROR - Database not initialized")
-		http.Error(w, "database not initialized", http.StatusInternalServerError)
-		return
-	}
-
-	job_extract_id := uuid.New().String()
-	combinedObjectJSON, err := json.Marshal(combinedObject)
-	if err != nil {
-		log.Printf("HandleProcessJob: ERROR - Failed to marshal combined object: %v", err)
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
-
-	_, err = dbInst.ExecContext(r.Context(), `
-		INSERT INTO job_extractions
-			(id, job_id, provider, model, prompt_version, raw_response, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`,
-		job_extract_id,             // id
-		jobID,                      // job_id
-		req.Provider,               // provider
-		req.Model,                  // model
-		"v1",                       // prompt_version
-		string(combinedObjectJSON), // raw_response (the combined object as JSON)
-		time.Now(),                 // created_at
+	// Process the job using the reusable ProcessJobDetails function
+	combinedObject, jobID, err := ProcessJobDetails(
+		r.Context(),
+		req.Title,
+		req.Company,
+		req.Location,
+		req.EmploymentType,
+		req.WorkMode,
+		req.LinkedinJobID,
+		req.NaukriJobID,
+		req.Source,
+		req.Provider,
+		req.Model,
+		req.JobDescription,
 	)
 	if err != nil {
-		log.Printf("HandleProcessJob: ERROR - Failed to save job extraction: %v", err)
-		http.Error(w, "failed to save job extraction", http.StatusInternalServerError)
+		log.Printf("HandleProcessJob: ERROR - Failed to process job: %v", err)
+		// Determine if it's a client error (4xx) or server error (5xx)
+		if strings.Contains(err.Error(), "unauthorized") || strings.Contains(err.Error(), "API key not found") {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+		} else if strings.Contains(err.Error(), "database not initialized") {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else if strings.Contains(err.Error(), "job description is required") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, fmt.Sprintf("failed to process job: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
-	log.Printf("HandleProcessJob: Successfully saved combined object to job_extractions table with ID: %s", job_extract_id)
+	// log.Printf("HandleProcessJob: Successfully saved combined object to job_extractions table with ID: %s", job_extract_id)
 
 	// Prepare and return the response with the combined object
 	response := ProcessJobResponse{
@@ -447,6 +175,250 @@ func checkNaukriJobExists(ctx context.Context, dbInst *db.DB, naukriJobID string
 		)
 	`, naukriJobID).Scan(&exists)
 	return exists, err
+}
+
+// ProcessJobDetails processes a job using LLM extraction and returns the combined result.
+// It takes pre-validated basic job fields (title, company, location, employment_type, work_mode)
+// and source-specific IDs, handles LLM processing to extract full job information
+// (skills, responsibilities, soft skills, domain knowledge, seniority, experience)
+// from the description, combines with provided fields, and saves to the job_extractions table.
+func ProcessJobDetails(
+	ctx context.Context,
+	title string,
+	company string,
+	location string,
+	employmentType string,
+	workMode string,
+	linkedinJobID string,
+	naukriJobID string,
+	source string,
+	aiProvider string,
+	model string,
+	jobDescription string,
+) (map[string]interface{}, string, error) {
+	log.Printf("ProcessJobDetails: START - Processing job with provider %s and model %s", aiProvider, model)
+
+	// Validate job description
+	if jobDescription == "" {
+		return nil, "", fmt.Errorf("job description is required for processing")
+	}
+
+	// Retrieve user ID from context (set by auth middleware).
+	userIDVal := ctx.Value("userID")
+	if userIDVal == nil {
+		return nil, "", fmt.Errorf("unauthorized request")
+	}
+	userID, ok := userIDVal.(int64)
+	if !ok {
+		return nil, "", fmt.Errorf("invalid user ID in context")
+	}
+
+	// Get encrypted API key from database for the specific provider.
+	if dbInst == nil {
+		return nil, "", fmt.Errorf("database not initialized")
+	}
+	encryptedKey, err := dbInst.GetAPIKey(ctx, userID, aiProvider)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", fmt.Errorf("API key not found for user %d and provider %s", userID, aiProvider)
+		}
+		return nil, "", fmt.Errorf("could not retrieve API key: %w", err)
+	}
+
+	// Decrypt the API key.
+	apiKey, err := apikey.Decrypt(encryptedKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("decryption failed: %w", err)
+	}
+
+	log.Printf("ProcessJobDetails: Decrypted API key retrieved successfully")
+
+	// Create AI provider for LLM extraction
+	gen, err := provider.Factory(aiProvider, apiKey, model)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create AI provider: %w", err)
+	}
+
+	// Build prompt for FULL extraction using the job_skills_extraction template
+	promptData := map[string]string{
+		"Description": jobDescription,
+	}
+	prompt, err := prompts.RenderTemplate("job_skills_extraction", promptData)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to render job skills extraction template: %w", err)
+	}
+
+	// Generate full job information from description
+	log.Printf("ProcessJobDetails: Calling LLM for job extraction")
+	generatedText, err := gen.GenerateText(ctx, prompt)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate text: %w", err)
+	}
+	log.Printf("ProcessJobDetails: LLM generation successful, response length: %d", len(generatedText))
+
+	// Extract JSON object from the LLM output
+	jsonStr := strings.TrimSpace(generatedText)
+	startIdx := strings.Index(jsonStr, "{")
+	endIdx := strings.LastIndex(jsonStr, "}")
+	if startIdx == -1 || endIdx == -1 || endIdx < startIdx {
+		return nil, "", fmt.Errorf("no JSON object found in provider response")
+	}
+	jsonStr = jsonStr[startIdx : endIdx+1]
+
+	// Parse the LLM response to validate it's valid JSON
+	var llmResponse map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &llmResponse); err != nil {
+		return nil, "", fmt.Errorf("failed to parse provider response as JSON: %w", err)
+	}
+	log.Printf("ProcessJobDetails: LLM response parsed successfully")
+
+	// Create a stable job ID for tracking
+	jobID := uuid.New().String()
+
+	// Helper function to create a field object with value, confidence, and evidence
+	makeField := func(value string, confidence float64, evidence string) map[string]interface{} {
+		if value == "" {
+			return map[string]interface{}{
+				"value":      nil,
+				"confidence": 0.0,
+				"evidence":   nil,
+			}
+		}
+		return map[string]interface{}{
+			"value":      value,
+			"confidence": confidence,
+			"evidence":   evidence,
+		}
+	}
+
+	// Build the final combined object with both pre-provided fields and LLM-extracted fields
+	combinedObject := map[string]interface{}{
+		"title": makeField(
+			title,
+			0.95, // High confidence for pre-provided data
+			fmt.Sprintf("Provided in API request: %s", title),
+		),
+		"company": makeField(
+			company,
+			0.95, // High confidence for pre-provided data
+			fmt.Sprintf("Provided in API request: %s", company),
+		),
+		"location": map[string]interface{}{
+			"city":       extractCity(location),
+			"state":      extractState(location),
+			"country":    extractCountry(location),
+			"confidence": 0.95, // High confidence for pre-provided data
+			"evidence":   fmt.Sprintf("Provided in API request: %s", location),
+		},
+		"employment_type": makeField(
+			employmentType,
+			0.95, // High confidence for pre-provided data
+			fmt.Sprintf("Provided in API request: %s", employmentType),
+		),
+		"work_mode": makeField(
+			workMode,
+			0.95, // High confidence for pre-provided data
+			fmt.Sprintf("Provided in API request: %s", workMode),
+		),
+		"seniority":        llmResponse["seniority"],
+		"experience":       llmResponse["experience"],
+		"skills":           llmResponse["skills"],
+		"responsibilities": llmResponse["responsibilities"],
+		"soft_skills":      llmResponse["soft_skills"],
+		"domain_knowledge": llmResponse["domain_knowledge"],
+	}
+
+	// Ensure LLM-extracted fields are present (default to empty arrays/null if missing)
+	if combinedObject["skills"] == nil {
+		combinedObject["skills"] = []interface{}{}
+	}
+	if combinedObject["responsibilities"] == nil {
+		combinedObject["responsibilities"] = []interface{}{}
+	}
+	if combinedObject["soft_skills"] == nil {
+		combinedObject["soft_skills"] = []interface{}{}
+	}
+	if combinedObject["domain_knowledge"] == nil {
+		combinedObject["domain_knowledge"] = []interface{}{}
+	}
+	if combinedObject["seniority"] == nil {
+		combinedObject["seniority"] = nil
+	}
+	if combinedObject["experience"] == nil {
+		combinedObject["experience"] = map[string]interface{}{
+			"minimum_years": nil,
+			"maximum_years": nil,
+			"confidence":    0.0,
+			"evidence":      nil,
+		}
+	}
+
+	// Save the combined object to job_extractions table
+	jobExtractID := uuid.New().String()
+	combinedObjectJSON, err := json.Marshal(combinedObject)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal combined object: %w", err)
+	}
+
+	_, err = dbInst.ExecContext(ctx, `
+        INSERT INTO job_extractions
+            (id, job_id, provider, model, prompt_version, raw_response, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `,
+		jobExtractID,               // id
+		jobID,                      // job_id
+		aiProvider,                 // provider
+		model,                      // model
+		"v1",                       // prompt_version
+		string(combinedObjectJSON), // raw_response (the combined object as JSON)
+		time.Now(),                 // created_at
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to save job extraction: %w", err)
+	}
+	log.Printf("ProcessJobDetails: Successfully saved combined object to job_extractions table with ID: %s", jobExtractID)
+
+	log.Printf("ProcessJobDetails: END - Job processed successfully")
+	return combinedObject, jobID, nil
+}
+
+// Helper function to extract city from location string (simple implementation)
+func extractCity(location string) string {
+	if location == "" {
+		return ""
+	}
+	// Simple split by comma and take first part as city
+	parts := strings.Split(location, ",")
+	if len(parts) > 0 {
+		return strings.TrimSpace(parts[0])
+	}
+	return ""
+}
+
+// Helper function to extract state from location string (simple implementation)
+func extractState(location string) string {
+	if location == "" {
+		return ""
+	}
+	// Simple split by comma and take second part as state if exists
+	parts := strings.Split(location, ",")
+	if len(parts) > 1 {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+// Helper function to extract country from location string (simple implementation)
+func extractCountry(location string) string {
+	if location == "" {
+		return ""
+	}
+	// Simple split by comma and take last part as country if exists
+	parts := strings.Split(location, ",")
+	if len(parts) > 2 {
+		return strings.TrimSpace(parts[len(parts)-1])
+	}
+	return ""
 }
 
 // BatchProcessJobRequest represents the payload for starting a batch job.
@@ -504,7 +476,7 @@ func processSingleJob(ctx context.Context, job batchJob, dbInst *db.DB) (string,
 		return "", err
 	}
 	// Create AI provider
-	gen, err := provider.Factory(ctx, job.Provider, apiKey, job.Model)
+	gen, err := provider.Factory(job.Provider, apiKey, job.Model)
 	if err != nil {
 		return "", err
 	}

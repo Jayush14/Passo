@@ -217,7 +217,7 @@ func HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	var useEnhancedTemplate bool
 
 	// Create the AI provider for gap analysis (using the same provider and model as the request)
-	genForGap, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
+	genForGap, err := provider.Factory(req.Provider, apiKey, req.Model)
 	log.Printf("[roadmap] created AI provider for gap analysis: %v", genForGap)
 	if err != nil {
 		log.Printf("[roadmap] failed to create AI provider for gap analysis: %v", err)
@@ -229,17 +229,17 @@ func HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 		// Prepare the input.
 		// Note: we don't have experience years and current role in the request, so we leave them as zero/empty.
-			// Convert req.CurrentSkills to a map with default proficiency 3
-			skillProficiencies := make(map[string]int)
-			for _, skill := range req.CurrentSkills {
-				skillProficiencies[skill] = 3 // default proficiency
-			}
+		// Convert req.CurrentSkills to a map with default proficiency 3
+		skillProficiencies := make(map[string]int)
+		for _, skill := range req.CurrentSkills {
+			skillProficiencies[skill] = 3 // default proficiency
+		}
 		gapInput := pipeline.GapAnalysisInput{
-			UserID:          userID,
-			SkillProficiencies:  skillProficiencies,
-			TargetRole:      req.TargetRole,
-			ExperienceYears: 0,  // We don't have this in the request
-			CurrentRole:     "", // We don't have this in the request
+			UserID:             userID,
+			SkillProficiencies: skillProficiencies,
+			TargetRole:         req.TargetRole,
+			ExperienceYears:    0,  // We don't have this in the request
+			CurrentRole:        "", // We don't have this in the request
 		}
 
 		// Perform the analysis.
@@ -298,7 +298,7 @@ func HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get a TextGenerator for the selected provider
-	gen, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
+	gen, err := provider.Factory(req.Provider, apiKey, req.Model)
 	if err != nil {
 		log.Printf("[roadmap] unsupported provider %s: %v", req.Provider, err)
 		http.Error(w, fmt.Sprintf("unsupported provider %s: %v", req.Provider, err), http.StatusBadRequest)

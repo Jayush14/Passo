@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -19,7 +18,7 @@ import (
 // Factory returns a TextGenerator for the given provider name and API key.
 // Returns an error if the provider is unknown or the key is missing.
 // model parameter is optional; if empty, provider's default model will be used.
-func Factory(ctx context.Context, providerName, apiKey, model string) (contract.TextGenerator, error) {
+func Factory(providerName, apiKey, model string) (contract.TextGenerator, error) {
 	switch strings.ToLower(strings.TrimSpace(providerName)) {
 	case "gemini":
 		return gemini.New(apiKey, model), nil

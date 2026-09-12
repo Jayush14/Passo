@@ -171,7 +171,7 @@ func HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get a TextGenerator for the requested provider.
-	gen, err := provider.Factory(r.Context(), req.Provider, apiKey, req.Model)
+	gen, err := provider.Factory(req.Provider, apiKey, req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("unsupported provider %s: %v", req.Provider, err), http.StatusBadRequest)
 		return
