@@ -1026,18 +1026,8 @@ func HandleProcessJobBatch(w http.ResponseWriter, r *http.Request) {
 				 employment_type, work_mode, seniority, min_years, max_years, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		`, jobID, batchID, userID, provider, model, j.JobDescription,
-			func() interface{} {
-				if j.LinkedinJobID != "" {
-					return j.LinkedinJobID
-				}
-				return ""
-			}(),
-			func() interface{} {
-				if j.NaukriJobID != "" {
-					return j.NaukriJobID
-				}
-				return ""
-			}(),
+			j.LinkedinJobID,
+			j.NaukriJobID,
 			j.Source,
 			j.Title,
 			j.Company,

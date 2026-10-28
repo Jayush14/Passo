@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +17,12 @@ import (
 	"passo/backend/internal/plugins/market-data-engine/models"
 	"passo/backend/internal/plugins/market-data-engine/repository"
 )
+
+func logWithTS(format string, a ...interface{}) {
+	ts := time.Now().Format("2006-01-02 15:04:05.000")
+	msg := fmt.Sprintf(format, a...)
+	fmt.Println(ts, msg)
+}
 
 // WorkerPool manages a pool of workers that process job extractions
 type WorkerPool struct {
@@ -127,12 +132,15 @@ func (wp *WorkerPool) Config() WorkerConfig {
 }
 
 // Start begins the worker pool processing
-func (wp *WorkerPool) Start(ctx context.Context) error {
+func (wp *WorkerPool) Start() error {
+
+	logWithTS("[INFO] Starting MDE worker pool with config:", wp.config)
+
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 
 	if wp.running {
-		log.Print("[INFO] MDE worker pool already running")
+		logWithTS("[INFO] MDE worker pool already running")
 		return nil
 	}
 
@@ -140,11 +148,11 @@ func (wp *WorkerPool) Start(ctx context.Context) error {
 
 	// Start workers
 	for i := 0; i < wp.config.MaxConcurrentJobs; i++ {
-		go wp.worker(ctx, i)
-		log.Printf("[INFO] Started MDE worker %d", i)
+		go wp.worker(i)
+		logWithTS("[INFO] Started MDE worker %d", i)
 	}
 
-	log.Print("[INFO] MDE worker pool started")
+	logWithTS("[INFO] MDE worker pool started")
 	return nil
 }
 
@@ -154,13 +162,13 @@ func (wp *WorkerPool) Stop() {
 	defer wp.mu.Unlock()
 
 	if !wp.running {
-		log.Print("[INFO] MDE worker pool not running")
+		logWithTS("[INFO] MDE worker pool not running")
 		return
 	}
 
 	close(wp.stopChan)
 	wp.running = false
-	log.Print("[INFO] MDE worker pool stopping...")
+	logWithTS("[INFO] MDE worker pool stopping...")
 }
 
 // IsRunning reports whether the worker pool is currently processing jobs.
@@ -177,32 +185,32 @@ func (wp *WorkerPool) ProcessPendingExtractions(ctx context.Context, batchSize i
 }
 
 // worker is the main worker function that processes job extractions
-func (wp *WorkerPool) worker(ctx context.Context, workerID int) {
-	log.Printf("[INFO] workerID=%d: started", workerID)
-	defer log.Printf("[INFO] workerID=%d: stopped", workerID)
+func (wp *WorkerPool) worker(workerID int) {
+	logWithTS("[INFO] workerID=%d: started", workerID)
+	defer logWithTS("[INFO] workerID=%d: stopped", workerID)
 
 	for {
 		select {
 		case <-wp.stopChan:
-			log.Printf("[INFO] workerID=%d: received stop signal", workerID)
+			logWithTS("[INFO] workerID=%d: received stop signal", workerID)
 			return
 		default:
 			// Process a batch of job extractions
-			if count, err := wp.processBatch(ctx, wp.config.BatchSize); err != nil {
+			if count, err := wp.processBatch(context.Background(), wp.config.BatchSize); err != nil {
 				// Log error but continue processing
-				log.Printf("[ERROR] workerID=%d: error processing batch: %v", workerID, err)
+				logWithTS("[ERROR] workerID=%d: error processing batch: %v", workerID, err)
 				continue
 			} else {
 				// Optionally log count for debugging
 				if count > 0 {
-					log.Printf("[INFO] workerID=%d: processed %d extractions in batch", workerID, count)
+					logWithTS("[INFO] workerID=%d: processed %d extractions in batch", workerID, count)
 				}
 			}
 
 			// Wait before processing the next batch
 			select {
 			case <-wp.stopChan:
-				log.Printf("[INFO] workerID=%d: received stop signal during wait", workerID)
+				logWithTS("[INFO] workerID=%d: received stop signal during wait", workerID)
 				return
 			case <-time.After(wp.config.JobPollInterval):
 				// Continue to next iteration
@@ -213,7 +221,7 @@ func (wp *WorkerPool) worker(ctx context.Context, workerID int) {
 
 // processBatch processes a batch of job extractions
 func (wp *WorkerPool) processBatch(ctx context.Context, batchSize int) (int, error) {
-	log.Printf("[DEBUG] processBatch: starting batch (size=%d)", batchSize)
+	logWithTS("[DEBUG] processBatch: starting batch (size=%d)", batchSize)
 	// Start a normalization run to track this batch
 	runID, err := wp.normalizationRunRepo.Insert(ctx, &models.NormalizationRun{
 		ID:        uuid.New(),
@@ -224,17 +232,18 @@ func (wp *WorkerPool) processBatch(ctx context.Context, batchSize int) (int, err
 		UpdatedAt: time.Now(),
 	})
 	if err != nil {
-		log.Printf("[ERROR] processBatch: failed to insert normalization run: %v", err)
+		logWithTS("[ERROR] processBatch: failed to insert normalization run: %v", err)
 		return 0, err
 	}
 
+	logWithTS("[DEBUG] processBatch: normalization run %s started", runID)
 	// Mark the run as completed when we're done
 	defer func() {
 		completedAt := time.Now().Format(time.RFC3339)
 		if err := wp.normalizationRunRepo.UpdateStatus(ctx, runID, "completed", &completedAt, nil); err != nil {
-			log.Printf("[ERROR] processBatch: failed to update normalization run status: %v", err)
+			logWithTS("[ERROR] processBatch: failed to update normalization run status: %v", err)
 		}
-		log.Printf("[DEBUG] processBatch: normalization run %s completed", runID)
+		logWithTS("[DEBUG] processBatch: normalization run %s completed", runID)
 	}()
 
 	// Get pending job extractions using FOR UPDATE SKIP LOCKED for distributed locking
@@ -244,12 +253,13 @@ func (wp *WorkerPool) processBatch(ctx context.Context, batchSize int) (int, err
 		WHERE mde_processed = FALSE
 		ORDER BY created_at ASC
 		FOR UPDATE SKIP LOCKED
-		$1
+		LIMIT $1
 	`, batchSize)
 	if err != nil {
-		log.Printf("[ERROR] processBatch: failed to query job_extractions: %v", err)
+		logWithTS("[ERROR] processBatch: failed to query job_extractions: %v", err)
 		return 0, err
 	}
+
 	defer rows.Close()
 
 	var processedCount int
@@ -262,7 +272,7 @@ func (wp *WorkerPool) processBatch(ctx context.Context, batchSize int) (int, err
 			&jobExtraction.CreatedAt,
 		); err != nil {
 			// Update the run with error and continue
-			log.Printf("[ERROR] processBatch: failed to scan job extraction: %v", err)
+			logWithTS("[ERROR] processBatch: failed to scan job extraction: %v", err)
 			wp.normalizationRunRepo.UpdateProgress(ctx, runID, processedCount, 0, 1)
 			wp.failedExtractionRepo.Insert(ctx, &models.FailedExtraction{
 				ID:             uuid.New(),
@@ -277,15 +287,27 @@ func (wp *WorkerPool) processBatch(ctx context.Context, batchSize int) (int, err
 			processedAt := time.Now().Format(time.RFC3339)
 			errorMsg := err.Error()
 			wp.jobRepo.UpdateMDEProcessingStatus(ctx, jobExtraction.JobID, true, &processedAt, &errorMsg)
+
+			// Mark the job extraction as processed in the job_extractions table to avoid reprocessing
+			if _, err := wp.db.Exec(ctx, `
+				UPDATE job_extractions
+				SET mde_processed = true,
+				    mde_processed_at = NOW(),
+				    mde_error_message = $1
+				WHERE id = $2
+			`, err.Error(), jobExtraction.ID); err != nil {
+				logWithTS("[ERROR] processBatch: failed to update job extraction %s as processed: %v", jobExtraction.ID, err)
+			}
+
 			continue
 		}
 
-		log.Printf("[DEBUG] processBatch: processing extraction %s (jobID=%s)", jobExtraction.ID, jobExtraction.JobID)
+		logWithTS("[DEBUG] processBatch: processing extraction %s (jobID=%s)", jobExtraction.ID, jobExtraction.JobID)
 
 		// Process this job extraction
 		if err := wp.processJobExtraction(ctx, &jobExtraction); err != nil {
 			// Update the run with error and continue
-			log.Printf("[ERROR] processBatch: failed to process job extraction %s: %v", jobExtraction.ID, err)
+			logWithTS("[ERROR] processBatch: failed to process job extraction %s: %v", jobExtraction.ID, err)
 			wp.normalizationRunRepo.UpdateProgress(ctx, runID, processedCount, 0, 1)
 			wp.failedExtractionRepo.Insert(ctx, &models.FailedExtraction{
 				ID:             uuid.New(),
@@ -300,39 +322,65 @@ func (wp *WorkerPool) processBatch(ctx context.Context, batchSize int) (int, err
 			processedAt := time.Now().Format(time.RFC3339)
 			errorMsg := err.Error()
 			wp.jobRepo.UpdateMDEProcessingStatus(ctx, jobExtraction.JobID, true, &processedAt, &errorMsg)
+
+			// Mark the job extraction as processed in the job_extractions table to avoid reprocessing
+			if _, err := wp.db.Exec(ctx, `
+				UPDATE job_extractions
+				SET mde_processed = true,
+				    mde_processed_at = NOW(),
+				    mde_error_message = $1
+				WHERE id = $2
+			`, err.Error(), jobExtraction.ID); err != nil {
+				logWithTS("[ERROR] processBatch: failed to update job extraction %s as processed: %v", jobExtraction.ID, err)
+			}
+
 			continue
 		}
 
-		log.Printf("[DEBUG] processBatch: successfully processed extraction %s", jobExtraction.ID)
+		logWithTS("[DEBUG] processBatch: successfully processed extraction %s", jobExtraction.ID)
 		processedCount++
+
+		// Mark the job extraction as processed in the job_extractions table to avoid reprocessing
+		if _, err := wp.db.Exec(ctx, `
+			UPDATE job_extractions
+			SET mde_processed = true,
+			    mde_processed_at = NOW(),
+			    mde_error_message = NULL
+			WHERE id = $1
+		`, jobExtraction.ID); err != nil {
+			logWithTS("[ERROR] processBatch: failed to update job extraction %s as processed: %v", jobExtraction.ID, err)
+		}
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Printf("[ERROR] processBatch: error after iterating rows: %v", err)
+		logWithTS("[ERROR] processBatch: error after iterating rows: %v", err)
 		return processedCount, err
 	}
 
 	// Update the run with final progress
 	if err := wp.normalizationRunRepo.UpdateProgress(ctx, runID, processedCount, processedCount, 0); err != nil {
-		log.Printf("[ERROR] processBatch: failed to update progress: %v", err)
+		logWithTS("[ERROR] processBatch: failed to update progress: %v", err)
 	}
 
-	log.Printf("[INFO] processBatch: completed batch, processed=%d", processedCount)
+	logWithTS("[INFO] processBatch: completed batch, processed=%d", processedCount)
 	return processedCount, nil
 }
 
 // processJobExtraction processes a single job extraction
 func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *models.JobExtraction) error {
 	// Unmarshal raw_response into ExtractedJobData
+	logWithTS("[DEBUG] processJobExtraction: unmarshaling raw_response for extraction %s", extraction.ID)
 	var extracted models.ExtractedJobData
 	if err := json.Unmarshal(extraction.RawResponse, &extracted); err != nil {
 		return fmt.Errorf("failed to unmarshal raw_response: %w", err)
 	}
 
-	log := log.Printf // shortcut for logging
+	// shortcut for logging removed; using logWithTS directly
 
 	// Normalize the extracted job data
 	normalizedJob := wp.normalizer.NormalizeJob(extracted)
+
+	logWithTS("[DEBUG] processJobExtraction: normalized job data for extraction %s: %+v", extraction.ID, normalizedJob)
 
 	// Start a transaction
 	tx, err := wp.db.Begin(ctx)
@@ -342,121 +390,79 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 	defer func() {
 		if err != nil {
 			if rbErr := tx.Rollback(ctx); rbErr != nil {
-				log("[ERROR] processJobExtraction: rollback failed after error: %v", rbErr)
+				logWithTS("[ERROR] processJobExtraction: rollback failed after error: %v", rbErr)
 			}
 		} else {
 			if cmErr := tx.Commit(ctx); cmErr != nil {
-				log("[ERROR] processJobExtraction: commit failed: %v", cmErr)
+				logWithTS("[ERROR] processJobExtraction: commit failed: %v", cmErr)
 				err = cmErr
 			}
 		}
 	}()
 
+	logWithTS("[DEBUG] processJobExtraction: transaction started for extraction %s", extraction.ID)
 	// Create or get the company
-	var companyID uuid.UUID
+	logWithTS("[TRACE] processJobExtraction: entering company block")
+	var companyID *uuid.UUID
 	companyValue, _ := normalizedJob.Company.Value.(string)
 	if companyValue != "" {
 		company, err := wp.companyRepo.GetByCanonicalName(ctx, companyValue)
+		logWithTS("[DEBUG] processJobExtraction: retrieved company '%s' for extraction %s", companyValue, extraction.ID)
 		if err != nil || company == nil {
-			// unknown -> review queue
-			log("[INFO] processJobExtraction: unknown company '%s' (extraction %s) -> review queue", companyValue, extraction.ID)
-			wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-				ID:           uuid.New(),
-				EntityType:   "company",
-				EntityID:     uuid.Nil,
-				FieldName:    "company",
-				FieldValue:   companyValue,
-				Priority:     0,
-				Attempts:     0,
-				Status:       "pending_review",
-				ErrorMessage: nil,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			})
-			// continue without creating a company placeholder
+			// unknown -> use nil UUID
+			logWithTS("[WARN] processJobExtraction: unknown company '%s' (extraction %s) -> using nil UUID", companyValue, extraction.ID)
+			// companyID remains nil
 		} else {
-			companyID = company.ID
-			log("[DEBUG] processJobExtraction: found company '%s' (ID=%s)", companyValue, companyID)
+			companyID = &company.ID
+			logWithTS("[DEBUG] processJobExtraction: found company '%s' (ID=%s)", companyValue, *companyID)
 		}
 	}
 
 	// Create or get the location
+	logWithTS("[DEBUG] processJobExtraction: after company lookup, before location lookup")
 	var locationID uuid.UUID
 	if normalizedJob.Location.City != "" {
+		logWithTS("[DEBUG] processJobExtraction: about to call location repo")
 		location, err := wp.locationRepo.GetByCityStateCountry(ctx, normalizedJob.Location.City, normalizedJob.Location.State, normalizedJob.Location.Country)
+		logWithTS("[DEBUG] processJobExtraction: location repo returned")
 
 		if err != nil || location == nil {
-			// unknown -> review queue
+			// unknown -> use nil UUID
 			locStr := normalizedJob.Location.City + ", " + normalizedJob.Location.State + ", " + normalizedJob.Location.Country
-			log("[INFO] processJobExtraction: unknown location '%s' (extraction %s) -> review queue", locStr, extraction.ID)
-			wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-				ID:           uuid.New(),
-				EntityType:   "location",
-				EntityID:     uuid.Nil,
-				FieldName:    "location",
-				FieldValue:   locStr,
-				Priority:     0,
-				Attempts:     0,
-				Status:       "pending_review",
-				ErrorMessage: nil,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			})
+			logWithTS("[WARN] processJobExtraction: unknown location '%s' (extraction %s) -> using nil UUID", locStr, extraction.ID)
+			locationID = uuid.Nil
 		} else {
 			locationID = location.ID
-			log("[DEBUG] processJobExtraction: found location '%s' (ID=%s)", locationID)
+			logWithTS("[DEBUG] processJobExtraction: found location '%s' (ID=%s)", locationID)
 		}
 	}
+	logWithTS("[DEBUG] processJobExtraction: after location block")
 
 	// Create or get the job title
-	var titleID uuid.UUID
+	var titleID *uuid.UUID
 	if normalizedJob.Title.Value != "" {
 		title, err := wp.jobTitleRepo.GetByCanonicalName(ctx, normalizedJob.Title.Value)
 		if err != nil || title == nil {
-			// unknown -> review queue
-			log("[INFO] processJobExtraction: unknown title '%s' (extraction %s) -> review queue", normalizedJob.Title.Value, extraction.ID)
-			wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-				ID:           uuid.New(),
-				EntityType:   "title",
-				EntityID:     uuid.Nil,
-				FieldName:    "title",
-				FieldValue:   normalizedJob.Title.Value,
-				Priority:     0,
-				Attempts:     0,
-				Status:       "pending_review",
-				ErrorMessage: nil,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			})
+			// unknown -> use nil UUID
+			logWithTS("[WARN] processJobExtraction: unknown title '%s' (extraction %s) -> using nil UUID", normalizedJob.Title.Value, extraction.ID)
+			titleID = nil
 		} else {
-			titleID = title.ID
-			log("[DEBUG] processJobExtraction: found title '%s' (ID=%s)", normalizedJob.Title.Value, titleID)
+			titleID = &title.ID
+			logWithTS("[DEBUG] processJobExtraction: found title '%s' (ID=%s)", normalizedJob.Title.Value, *titleID)
 		}
 	}
 
 	// Create or get the seniority level
-	var seniorityID uuid.UUID
+	var seniorityID *uuid.UUID
 	if normalizedJob.Seniority.Value != "" {
 		seniority, err := wp.seniorityLevelRepo.GetByCanonicalName(ctx, normalizedJob.Seniority.Value)
 		if err != nil || seniority == nil {
-			// unknown -> review queue
-			log("[INFO] processJobExtraction: unknown seniority '%s' (extraction %s) -> review queue", normalizedJob.Seniority.Value, extraction.ID)
-			wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-				ID:           uuid.New(),
-				EntityType:   "seniority",
-				EntityID:     uuid.Nil,
-				FieldName:    "seniority",
-				FieldValue:   normalizedJob.Seniority.Value,
-				Priority:     0,
-				Attempts:     0,
-				Status:       "pending_review",
-				ErrorMessage: nil,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			})
+			// unknown -> use nil UUID
+			logWithTS("[WARN] processJobExtraction: unknown seniority '%s' (extraction %s) -> using nil UUID", normalizedJob.Seniority.Value, extraction.ID)
+			seniorityID = nil
 		} else {
-			seniorityID = seniority.ID
-			log("[DEBUG] processJobExtraction: found seniority '%s' (ID=%s)", normalizedJob.Seniority.Value, seniorityID)
+			seniorityID = &seniority.ID
+			logWithTS("[DEBUG] processJobExtraction: found seniority '%s' (ID=%s)", normalizedJob.Seniority.Value, *seniorityID)
 		}
 	}
 
@@ -465,24 +471,12 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 	if normalizedJob.EmploymentType.Value != "" {
 		employmentType, err := wp.employmentTypeRepo.GetByCanonicalName(ctx, normalizedJob.EmploymentType.Value)
 		if err != nil || employmentType == nil {
-			// unknown -> review queue
-			log("[INFO] processJobExtraction: unknown employment_type '%s' (extraction %s) -> review queue", normalizedJob.EmploymentType.Value, extraction.ID)
-			wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-				ID:           uuid.New(),
-				EntityType:   "employment_type",
-				EntityID:     uuid.Nil,
-				FieldName:    "employment_type",
-				FieldValue:   normalizedJob.EmploymentType.Value,
-				Priority:     0,
-				Attempts:     0,
-				Status:       "pending_review",
-				ErrorMessage: nil,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			})
+			// unknown -> use nil UUID
+			logWithTS("[WARN] processJobExtraction: unknown employment_type '%s' (extraction %s) -> using nil UUID", normalizedJob.EmploymentType.Value, extraction.ID)
+			employmentTypeID = uuid.Nil
 		} else {
 			employmentTypeID = employmentType.ID
-			log("[DEBUG] processJobExtraction: found employment_type '%s' (ID=%s)", normalizedJob.EmploymentType.Value, employmentTypeID)
+			logWithTS("[DEBUG] processJobExtraction: found employment_type '%s' (ID=%s)", normalizedJob.EmploymentType.Value, employmentTypeID)
 		}
 	}
 
@@ -491,49 +485,55 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 	if normalizedJob.WorkMode.Value != "" {
 		workMode, err := wp.workModeRepo.GetByCanonicalName(ctx, normalizedJob.WorkMode.Value)
 		if err != nil || workMode == nil {
-			// unknown -> review queue
-			log("[INFO] processJobExtraction: unknown work_mode '%s' (extraction %s) -> review queue", normalizedJob.WorkMode.Value, extraction.ID)
-			wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-				ID:           uuid.New(),
-				EntityType:   "work_mode",
-				EntityID:     uuid.Nil,
-				FieldName:    "work_mode",
-				FieldValue:   normalizedJob.WorkMode.Value,
-				Priority:     0,
-				Attempts:     0,
-				Status:       "pending_review",
-				ErrorMessage: nil,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			})
+			// unknown -> use nil UUID
+			logWithTS("[WARN] processJobExtraction: unknown work_mode '%s' (extraction %s) -> using nil UUID", normalizedJob.WorkMode.Value, extraction.ID)
+			workModeID = uuid.Nil
 		} else {
 			workModeID = workMode.ID
-			log("[DEBUG] processJobExtraction: found work_mode '%s' (ID=%s)", normalizedJob.WorkMode.Value, workModeID)
+			logWithTS("[DEBUG] processJobExtraction: found work_mode '%s' (ID=%s)", normalizedJob.WorkMode.Value, workModeID)
 		}
 	}
 
+	logWithTS("[DEBUG] processJobExtraction: creating job record for extraction %s", extraction.ID)
+
+	// Create or get the job family
+	var jobFamilyID *uuid.UUID
+	// TODO: implement job family lookup
+	// For now, leave as nil
+	jobFamilyID = nil
+
+	// Create or get the normalization version
+	var normalizationVersionID *uuid.UUID
+	// TODO: implement normalization version lookup
+	// For now, leave as nil
+	normalizationVersionID = nil
+
 	// Create the job
 	job := &models.Job{
-		ID:              uuid.New(),
-		ExternalID:      extraction.JobID.String(),
-		Source:          "unknown",
-		SourceURL:       "",
-		RawContent:      extraction.RawContent,
-		Language:        extraction.Language,
-		RetrievedAt:     time.Now(),
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
-		MDEProcessed:    true,
-		MDEProcessedAt:  func() *string { s := time.Now().Format(time.RFC3339); return &s }(),
-		MDEErrorMessage: nil,
-		// normalization_version will be set from config or taxonomy version later
+		ID:                   uuid.New(),
+		ExternalID:           extraction.JobID.String(),
+		Source:               "unknown",
+		SourceURL:            "",
+		RawContent:           extraction.RawContent,
+		Language:             extraction.Language,
+		TitleID:              titleID,
+		CompanyID:            companyID,
+		SeniorityID:          seniorityID,
+		JobFamilyID:          jobFamilyID,
+		NormalizationVersion: normalizationVersionID,
+		RetrievedAt:          time.Now(),
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
+		MDEProcessed:         true,
+		MDEProcessedAt:       func() *string { s := time.Now().Format(time.RFC3339); return &s }(),
+		MDEErrorMessage:      nil,
 	}
 
 	jobID, err := wp.jobRepo.Insert(ctx, job)
 	if err != nil {
 		return fmt.Errorf("failed to insert job: %w", err)
 	}
-	log("[DEBUG] processJobExtraction: inserted job ID=%s", jobID)
+	logWithTS("[DEBUG] processJobExtraction: inserted job ID=%s", jobID)
 
 	// Create the job posting with deduplication
 	dedupKey := computeDedupKey(normalizedJob, extraction.JobID)
@@ -580,13 +580,24 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 		if isUniqueViolation(err) {
 			// Duplicate posting: we can still link skills to the existing posting if desired.
 			// For simplicity, we'll just mark the extraction as processed and skip further persistence.
-			log("[INFO] processJobExtraction: duplicate posting detected (dedup_key=%s) for extraction %s -> skipping persistence", dedupKey, extraction.ID)
+			logWithTS("[INFO] processJobExtraction: duplicate posting detected (dedup_key=%s) for extraction %s -> skipping persistence", dedupKey, extraction.ID)
 			wp.jobRepo.UpdateMDEProcessingStatus(ctx, extraction.JobID, true, nil, nil)
+			// Mark the extraction as processed to avoid re‑processing the same row
+			processedAt := time.Now().Format(time.RFC3339)
+			if _, err := wp.db.Exec(ctx, `
+				UPDATE job_extractions
+				SET mde_processed = true,
+				    mde_processed_at = $1,
+				    mde_error_message = NULL
+				WHERE id = $2
+			`, processedAt, extraction.ID); err != nil {
+				logWithTS("[ERROR] processJobExtraction: failed to mark extraction %s as processed after duplicate: %v", extraction.ID, err)
+			}
 			return nil
 		}
 		return fmt.Errorf("failed to insert job posting: %w", err)
 	}
-	log("[DEBUG] processJobExtraction: inserted job posting ID=%s", postingID)
+	logWithTS("[DEBUG] processJobExtraction: inserted job posting ID=%s", postingID)
 
 	// Create the job description
 	jobDescription := &models.JobDescription{
@@ -600,58 +611,37 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 	if err != nil {
 		return fmt.Errorf("failed to insert job description: %w", err)
 	}
-	log("[DEBUG] processJobExtraction: inserted job description ID=%s", descID)
+	logWithTS("[DEBUG] processJobExtraction: inserted job description ID=%s", descID)
 
 	// Create job skills
 	for _, skill := range normalizedJob.Skills {
-		// Get or create the skill
-		var skillModel *models.Skill
-		var err error
-		if skill.NormalizedName != "" {
-			skillModel, err = wp.skillRepo.GetByCanonicalName(ctx, skill.NormalizedName)
-			if err != nil || skillModel == nil {
-				// unknown -> review queue
-				log("[INFO] processJobExtraction: unknown skill (normalized) '%s' (extraction %s) -> review queue", skill.NormalizedName, extraction.ID)
-				wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-					ID:           uuid.New(),
-					EntityType:   "skill",
-					EntityID:     uuid.Nil,
-					FieldName:    "skill",
-					FieldValue:   skill.NormalizedName,
-					Priority:     0,
-					Attempts:     0,
-					Status:       "pending_review",
-					ErrorMessage: nil,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				})
-				continue
-			}
-		} else {
-			// fallback to raw name
-			skillModel, err = wp.skillRepo.GetByCanonicalName(ctx, skill.RawName)
-			if err != nil || skillModel == nil {
-				// unknown -> review queue
-				log("[INFO] processJobExtraction: unknown skill (raw) '%s' (extraction %s) -> review queue", skill.RawName, extraction.ID)
-				wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-					ID: uuid.New(),
+		var skillID uuid.UUID
+		var found bool
 
-					EntityType:   "skill",
-					EntityID:     uuid.Nil,
-					FieldName:    "skill",
-					FieldValue:   skill.RawName,
-					Priority:     0,
-					Attempts:     0,
-					Status:       "pending_review",
-					ErrorMessage: nil,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				})
-				continue
+		if skill.NormalizedName != "" {
+			skillModel, err := wp.skillRepo.GetByCanonicalName(ctx, skill.NormalizedName)
+			if err == nil && skillModel != nil {
+				skillID = skillModel.ID
+				found = true
+				logWithTS("[DEBUG] processJobExtraction: found skill (normalized) '%s' (ID=%s)", skill.NormalizedName, skillID)
+			} else {
+				logWithTS("[WARN] processJobExtraction: unknown skill (normalized) '%s' (extraction %s) -> using nil UUID", skill.NormalizedName, extraction.ID)
+			}
+		} else if skill.RawName != "" {
+			// fallback to raw name
+			skillModel, err := wp.skillRepo.GetByCanonicalName(ctx, skill.RawName)
+			if err == nil && skillModel != nil {
+				skillID = skillModel.ID
+				found = true
+				logWithTS("[DEBUG] processJobExtraction: found skill (raw) '%s' (ID=%s)", skill.RawName, skillID)
+			} else {
+				logWithTS("[WARN] processJobExtraction: unknown skill (raw) '%s' (extraction %s) -> using nil UUID", skill.RawName, extraction.ID)
 			}
 		}
-		skillID := skillModel.ID
-		log("[DEBUG] processJobExtraction: found skill '%s' (ID=%s)", skill.NormalizedName, skillID)
+
+		if !found {
+			skillID = uuid.Nil
+		}
 
 		// Create job skill
 		jobSkill := &models.JobSkill{
@@ -666,11 +656,12 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 		}
 
 		if _, err := wp.jobSkillRepo.Insert(ctx, jobSkill); err != nil {
-			log("[ERROR] processJobExtraction: failed to insert job skill for skill ID %s: %v", skillID, err)
+			logWithTS("[ERROR] processJobExtraction: failed to insert job skill: %v", err)
 			continue
 		}
-		log("[DEBUG] processJobExtraction: inserted job skill for skill ID=%s", skillID)
+		logWithTS("[DEBUG] processJobExtraction: inserted job skill with skillID=%s", skillID)
 	}
+
 	// Create job capabilities from skills
 	processedCapabilities := make(map[uuid.UUID]bool)
 	for _, skill := range normalizedJob.Skills {
@@ -700,83 +691,87 @@ func (wp *WorkerPool) processJobExtraction(ctx context.Context, extraction *mode
 			jobCapability.CapabilityID = &capabilityID
 		}
 		if _, err := wp.jobCapabilityRepo.Insert(ctx, jobCapability); err != nil {
-			log("[ERROR] processJobExtraction: failed to insert job capability for capability ID %s: %v", capabilityID, err)
+			logWithTS("[ERROR] processJobExtraction: failed to insert job capability for capability ID %s: %v", capabilityID, err)
 			continue
 		}
-		log("[DEBUG] processJobExtraction: inserted job capability for capability ID=%s", capabilityID)
+		logWithTS("[DEBUG] processJobExtraction: inserted job capability for capability ID=%s", capabilityID)
 	}
 
-	// Create job soft skills (stub implementation)
-	for _, softSkill := range normalizedJob.SoftSkills {
-		var softSkillModel *models.Skill
-		var err error
+	// Create job soft skills (stub implementation - skipped for now due to schema mismatch)
+	// TODO: Fix job_soft_skills table schema to match model expectations
+	/* for _, softSkill := range normalizedJob.SoftSkills {
+		var softSkillID uuid.UUID
+		var found bool
+
 		if softSkill.Name != "" {
-			softSkillModel, err = wp.skillRepo.GetByCanonicalName(ctx, softSkill.Name)
+			softSkillModel, err := wp.skillRepo.GetByCanonicalName(ctx, softSkill.Name)
 			if err != nil || softSkillModel == nil {
-				// unknown -> review queue
-				log("[INFO] processJobExtraction: unknown soft skill '%s' (extraction %s) -> review queue", softSkill.Name, extraction.ID)
-				wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-					ID:           uuid.New(),
-					EntityType:   "soft_skill",
-					EntityID:     uuid.Nil,
-					FieldName:    "soft_skill",
-					FieldValue:   softSkill.Name,
-					Priority:     0,
-					Attempts:     0,
-					Status:       "pending_review",
-					ErrorMessage: nil,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				})
+				// unknown -> use nil UUID
+				logWithTS("[WARN] processJobExtraction: unknown soft skill '%s' (extraction %s) -> using nil UUID", softSkill.Name, extraction.ID)
 				continue
+			} else {
+				// fallback
+				softSkillModel, err = wp.skillRepo.GetByCanonicalName(ctx, softSkill.Evidence) // not ideal
+				if err != nil || softSkillModel == nil {
+					// unknown -> use nil UUID
+					logWithTS("[WARN] processJobExtraction: unknown soft skill (by evidence) '%s' (extraction %s) -> using nil UUID", softSkill.Evidence, extraction.ID)
+					continue
+				} else {
+					softSkillID := softSkillModel.ID
+					logWithTS("[DEBUG] processJobExtraction: found soft skill '%s' (ID=%s)", softSkill.Name, softSkillID)
+
+					// Create job soft skill
+					jobSoftSkill := &models.JobSoftSkill{
+						ID:          uuid.New(),
+						JobID:       jobID,
+						SoftSkillID: softSkillID,
+						Proficiency: "",
+						CreatedAt:   time.Now(),
+						UpdatedAt:   time.Now(),
+					}
+
+					if _, err := wp.jobSoftSkillRepo.Insert(ctx, jobSoftSkill); err != nil {
+						logWithTS("[ERROR] processJobExtraction: failed to insert job soft skill for soft skill ID %s: %v", softSkillID, err)
+						continue
+					}
+					logWithTS("[DEBUG] processJobExtraction: inserted job soft skill for soft skill ID=%s", softSkillID)
+				}
 			}
-		} else {
-			// fallback
-			softSkillModel, err = wp.skillRepo.GetByCanonicalName(ctx, softSkill.Evidence) // not ideal
+		} else if softSkill.Evidence != "" {
+			// fallback to evidence
+			softSkillModel, err := wp.skillRepo.GetByCanonicalName(ctx, softSkill.Evidence)
 			if err != nil || softSkillModel == nil {
-				// unknown -> review queue
-				log("[INFO] processJobExtraction: unknown soft skill (by evidence) '%s' (extraction %s) -> review queue", softSkill.Evidence, extraction.ID)
-				wp.entityResolutionQueueRepo.Insert(ctx, &models.EntityResolutionQueueItem{
-					ID:           uuid.New(),
-					EntityType:   "soft_skill",
-					EntityID:     uuid.Nil,
-					FieldName:    "soft_skill",
-					FieldValue:   softSkill.Evidence,
-					Priority:     0,
-					Attempts:     0,
-					Status:       "pending_review",
-					ErrorMessage: nil,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				})
+				// unknown -> use nil UUID
+				logWithTS("[WARN] processJobExtraction: unknown soft skill (by evidence) '%s' (extraction %s) -> using nil UUID", softSkill.Evidence, extraction.ID)
 				continue
+			} else {
+				softSkillID := softSkillModel.ID
+				logWithTS("[DEBUG] processJobExtraction: found soft skill (by evidence) '%s' (ID=%s)", softSkill.Evidence, softSkillID)
+
+				// Create job soft skill
+				jobSoftSkill := &models.JobSoftSkill{
+					ID:          uuid.New(),
+					JobID:       jobID,
+					SoftSkillID: softSkillID,
+					Proficiency: "",
+					CreatedAt:   time.Now(),
+					UpdatedAt:   time.Now(),
+				}
+
+				if _, err := wp.jobSoftSkillRepo.Insert(ctx, jobSoftSkill); err != nil {
+					logWithTS("[ERROR] processJobExtraction: failed to insert job soft skill for soft skill ID %s: %v", softSkillID, err)
+					continue
+				}
+				logWithTS("[DEBUG] processJobExtraction: inserted job soft skill for soft skill ID=%s", softSkillID)
 			}
 		}
-		softSkillID := softSkillModel.ID
-		log("[DEBUG] processJobExtraction: found soft skill '%s' (ID=%s)", softSkill.Name, softSkillID)
-
-		// Create job soft skill
-		jobSoftSkill := &models.JobSoftSkill{
-			ID:          uuid.New(),
-			JobID:       jobID,
-			SoftSkillID: softSkillID,
-			Proficiency: "",
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
-
-		if _, err := wp.jobSoftSkillRepo.Insert(ctx, jobSoftSkill); err != nil {
-			log("[ERROR] processJobExtraction: failed to insert job soft skill for soft skill ID %s: %v", softSkillID, err)
-			continue
-		}
-		log("[DEBUG] processJobExtraction: inserted job soft skill for soft skill ID=%s", softSkillID)
-	}
+	} */
 
 	// Mark the extraction as processed
 	if err := wp.jobRepo.UpdateMDEProcessingStatus(ctx, extraction.JobID, true, nil, nil); err != nil {
 		return fmt.Errorf("failed to update extraction processing status: %w", err)
 	}
-	log("[INFO] processJobExtraction: extraction %s marked as processed", extraction.ID)
+	logWithTS("[INFO] processJobExtraction: extraction %s marked as processed", extraction.ID)
 
 	return nil
 }

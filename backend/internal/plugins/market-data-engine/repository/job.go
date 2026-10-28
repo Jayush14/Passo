@@ -23,9 +23,9 @@ func NewJobRepository(db *pgxpool.Pool) *JobRepository {
 func (r *JobRepository) Insert(ctx context.Context, job *models.Job) (uuid.UUID, error) {
 	query := `
 		INSERT INTO jobs
-			(id, external_id, source, source_url, raw_content, dedup_key,
+			(id, external_id, source, source_url, raw_content,
 			 language, retrieved_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id
 	`
 
@@ -36,7 +36,6 @@ func (r *JobRepository) Insert(ctx context.Context, job *models.Job) (uuid.UUID,
 		job.Source,
 		job.SourceURL,
 		job.RawContent,
-		job.DedupKey,
 		job.Language,
 		job.RetrievedAt,
 		job.CreatedAt,
@@ -49,7 +48,7 @@ func (r *JobRepository) Insert(ctx context.Context, job *models.Job) (uuid.UUID,
 // GetByID retrieves a job by its ID
 func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Job, error) {
 	query := `
-		SELECT id, external_id, source, source_url, raw_content, dedup_key,
+		SELECT id, external_id, source, source_url, raw_content,
 		       language, retrieved_at, created_at, updated_at
 		FROM jobs
 		WHERE id = $1
@@ -62,7 +61,6 @@ func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Job,
 		&job.Source,
 		&job.SourceURL,
 		&job.RawContent,
-		&job.DedupKey,
 		&job.Language,
 		&job.RetrievedAt,
 		&job.CreatedAt,
@@ -79,7 +77,7 @@ func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Job,
 // GetByExternalID retrieves a job by its external ID
 func (r *JobRepository) GetByExternalID(ctx context.Context, externalID string) (*models.Job, error) {
 	query := `
-		SELECT id, external_id, source, source_url, raw_content, dedup_key,
+		SELECT id, external_id, source, source_url, raw_content,
 		       language, retrieved_at, created_at, updated_at
 		FROM jobs
 		WHERE external_id = $1
@@ -92,7 +90,6 @@ func (r *JobRepository) GetByExternalID(ctx context.Context, externalID string) 
 		&job.Source,
 		&job.SourceURL,
 		&job.RawContent,
-		&job.DedupKey,
 		&job.Language,
 		&job.RetrievedAt,
 		&job.CreatedAt,
@@ -107,39 +104,18 @@ func (r *JobRepository) GetByExternalID(ctx context.Context, externalID string) 
 }
 
 // GetByDedupKey retrieves a job by its deduplication key
+// NOTE: Jobs table doesn't have a dedup_key column - this should query job_postings instead
+// But keeping the method signature for compatibility, returning nil for now
 func (r *JobRepository) GetByDedupKey(ctx context.Context, dedupKey string) (*models.Job, error) {
-	query := `
-		SELECT id, external_id, source, source_url, raw_content, dedup_key,
-		       language, retrieved_at, created_at, updated_at
-		FROM jobs
-		WHERE dedup_key = $1
-	`
-
-	var job models.Job
-	err := r.db.QueryRow(ctx, query, dedupKey).Scan(
-		&job.ID,
-		&job.ExternalID,
-		&job.Source,
-		&job.SourceURL,
-		&job.RawContent,
-		&job.DedupKey,
-		&job.Language,
-		&job.RetrievedAt,
-		&job.CreatedAt,
-		&job.UpdatedAt,
-	)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &job, nil
+	// Jobs table doesn't have dedup_key column - this method is misplaced
+	// Dedup key belongs on job_postings table, not jobs table
+	return nil, nil
 }
 
 // List returns all jobs with pagination
 func (r *JobRepository) List(ctx context.Context, limit, offset int) ([]*models.Job, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, external_id, source, source_url, raw_content, dedup_key,
+		SELECT id, external_id, source, source_url, raw_content,
 		       language, retrieved_at, created_at, updated_at
 		FROM jobs
 		ORDER BY retrieved_at DESC
@@ -159,7 +135,6 @@ func (r *JobRepository) List(ctx context.Context, limit, offset int) ([]*models.
 			&job.Source,
 			&job.SourceURL,
 			&job.RawContent,
-			&job.DedupKey,
 			&job.Language,
 			&job.RetrievedAt,
 			&job.CreatedAt,
@@ -181,10 +156,9 @@ func (r *JobRepository) Update(ctx context.Context, job *models.Job) error {
 		    source = $3,
 		    source_url = $4,
 		    raw_content = $5,
-		    dedup_key = $6,
-		    language = $7,
-		    retrieved_at = $8,
-		    updated_at = $9
+		    language = $6,
+		    retrieved_at = $7,
+		    updated_at = $8
 		WHERE id = $1
 	`
 
@@ -194,7 +168,6 @@ func (r *JobRepository) Update(ctx context.Context, job *models.Job) error {
 		job.Source,
 		job.SourceURL,
 		job.RawContent,
-		job.DedupKey,
 		job.Language,
 		job.RetrievedAt,
 		job.UpdatedAt,

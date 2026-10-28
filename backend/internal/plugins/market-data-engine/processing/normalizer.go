@@ -32,10 +32,10 @@ func (n *Normalizer) NormalizeSkills(extractedSkills []models.SkillField) []mode
 	var skillMatches []taxonomy.SkillMatch
 	for _, skill := range extractedSkills {
 		skillMatches = append(skillMatches, taxonomy.SkillMatch{
-			RawName:           skill.Name,
-			AlternativeNames:  []string{}, // In a real implementation, these would come from context
-			RequirementLevel:  skill.Requirement,
-			Evidence:          skill.Evidence,
+			RawName:          skill.Name,
+			AlternativeNames: []string{}, // In a real implementation, these would come from context
+			RequirementLevel: skill.Requirement,
+			Evidence:         skill.Evidence,
 		})
 	}
 
@@ -54,8 +54,8 @@ func (n *Normalizer) NormalizeSkills(extractedSkills []models.SkillField) []mode
 				Category:        normSkill.Capability.Category,
 				Subcategory:     "", // Not in base Capability model
 				Description:     normSkill.Capability.Description,
-				ParentID:        nil, // Not in base Capability model
-				LevelDefinition: nil, // Not in base Capability model
+				ParentID:        nil,      // Not in base Capability model
+				LevelDefinition: nil,      // Not in base Capability model
 				Status:          "active", // Default status
 				TaxonomyVersion: normSkill.Capability.TaxonomyVersion.String(),
 				CreatedAt:       normSkill.Capability.CreatedAt,
@@ -63,13 +63,13 @@ func (n *Normalizer) NormalizeSkills(extractedSkills []models.SkillField) []mode
 			}
 		}
 		result = append(result, models.NormalizedSkill{
-			RawName:           normSkill.RawName,
-			NormalizedName:    normSkill.NormalizedName,
-			Capability:        extCap,
-			Confidence:        normSkill.Confidence,
-			RequirementLevel:  normSkill.RequirementLevel,
-			Evidence:          normSkill.Evidence,
-			AlternativeNames:  normSkill.AlternativeNames,
+			RawName:          normSkill.RawName,
+			NormalizedName:   normSkill.NormalizedName,
+			Capability:       extCap,
+			Confidence:       normSkill.Confidence,
+			RequirementLevel: normSkill.RequirementLevel,
+			Evidence:         normSkill.Evidence,
+			AlternativeNames: normSkill.AlternativeNames,
 		})
 	}
 
@@ -234,11 +234,19 @@ func (n *Normalizer) NormalizeLocation(location string) string {
 
 // NormalizeJob takes extracted job data and returns normalized job data
 func (n *Normalizer) NormalizeJob(extractedJob models.ExtractedJobData) models.NormalizedJobData {
+
+	fmt.Printf("[DEBUG] NormalizeJob: normalizing job data for extraction %s", extractedJob.Title.Value)
 	// Normalize basic fields
 	normalizedTitle := n.NormalizeJobTitle(extractedJob.Title.Value)
-	normalizedCompany := n.NormalizeCompanyName(func() string { if extractedJob.Company.Value == nil { return "" }; return extractedJob.Company.Value.(string) }())
+	normalizedCompany := n.NormalizeCompanyName(func() string {
+		if extractedJob.Company.Value == nil {
+			return ""
+		}
+		return extractedJob.Company.Value.(string)
+	}())
 	normalizedLocation := n.NormalizeLocation(extractedJob.Location.City + ", " + extractedJob.Location.State + ", " + extractedJob.Location.Country)
 
+	fmt.Printf("[DEBUG] NormalizeJob: normalized title='%s', company='%s', location='%s'", normalizedTitle, normalizedCompany, normalizedLocation)
 	// Normalize skills
 	normalizedSkills := n.NormalizeSkills(extractedJob.Skills)
 
@@ -255,41 +263,53 @@ func (n *Normalizer) NormalizeJob(extractedJob models.ExtractedJobData) models.N
 	var normalizedSoftSkills []models.NormalizedSoftSkill
 	for _, softSkill := range extractedJob.SoftSkills {
 		normalizedSoftSkills = append(normalizedSoftSkills, models.NormalizedSoftSkill{
-			Name:  n.NormalizeSkill(softSkill.Name),
+			Name:     n.NormalizeSkill(softSkill.Name),
 			Evidence: strings.TrimSpace(softSkill.Evidence),
 		})
 	}
 
+	fmt.Printf("[DEBUG] NormalizeJob: Returning normalized job data", normalizedTitle, normalizedCompany, normalizedLocation, normalizedSkills, normalizedResp, normalizedSoftSkills)
+
 	return models.NormalizedJobData{
 		Title: models.TitleField{
-			Value:   normalizedTitle,
+			Value:      normalizedTitle,
 			Confidence: extractedJob.Title.Confidence,
 			Evidence:   normalizedTitle,
 		},
 		Company: models.CompanyField{
-			Value:     func() interface{} { if normalizedCompany == "" { return nil }; return normalizedCompany }(),
+			Value: func() interface{} {
+				if normalizedCompany == "" {
+					return nil
+				}
+				return normalizedCompany
+			}(),
 			Confidence: extractedJob.Company.Confidence,
-			Evidence:  func() interface{} { if normalizedCompany == "" { return nil }; return normalizedCompany }(),
+			Evidence: func() interface{} {
+				if normalizedCompany == "" {
+					return nil
+				}
+				return normalizedCompany
+			}(),
 		},
 		Location: models.LocationField{
-			City:      splitLocation(normalizedLocation, 0),
-			State:     splitLocation(normalizedLocation, 1),
-			Country:   splitLocation(normalizedLocation, 2),
+			City:       splitLocation(normalizedLocation, 0),
+			State:      splitLocation(normalizedLocation, 1),
+			Country:    splitLocation(normalizedLocation, 2),
 			Confidence: extractedJob.Location.Confidence,
 			Evidence:   normalizedLocation,
 		},
 		EmploymentType: models.EmploymentTypeField{
-			Value:     extractedJob.EmploymentType.Value,
+			Value:      extractedJob.EmploymentType.Value,
 			Confidence: extractedJob.EmploymentType.Confidence,
-			Evidence:  extractedJob.EmploymentType.Evidence,
+			Evidence:   extractedJob.EmploymentType.Evidence,
 		},
 		WorkMode: models.WorkModeField{
-			Value:     extractedJob.WorkMode.Value,
+			Value:      extractedJob.WorkMode.Value,
 			Confidence: extractedJob.WorkMode.Confidence,
-			Evidence:  extractedJob.WorkMode.Evidence,
+			Evidence:   extractedJob.WorkMode.Evidence,
 		},
 		Seniority: models.SeniorityField{
-			Value:     n.NormalizeJobTitle(extractedJob.Seniority.Value), // Normalize seniority title
+			Value:      n.NormalizeJobTitle(extractedJob.Seniority.Value), // Normalize seniority title
 			Confidence: extractedJob.Seniority.Confidence,
 			Evidence:   extractedJob.Seniority.Evidence,
 		},
@@ -299,11 +319,18 @@ func (n *Normalizer) NormalizeJob(extractedJob models.ExtractedJobData) models.N
 			Confidence:   extractedJob.Experience.Confidence,
 			Evidence:     extractedJob.Experience.Evidence,
 		},
-		Education: func() interface{} { if extractedJob.Education == nil { return nil }; return extractedJob.Education }(),
-		Skills:      normalizedSkills,
+
+		Education: func() interface{} {
+			if extractedJob.Education == nil {
+				return nil
+			}
+			return extractedJob.Education
+		}(),
+		Skills:           normalizedSkills,
 		Responsibilities: normalizedResp,
-		SoftSkills:  normalizedSoftSkills,
+		SoftSkills:       normalizedSoftSkills,
 	}
+
 }
 
 // splitLocation splits a location string by commas and returns the specified part

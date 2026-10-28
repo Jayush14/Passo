@@ -10,7 +10,7 @@ type JobPosting struct {
 	ID              uuid.UUID `json:"id"`
 	JobID           uuid.UUID `json:"job_id"`
 	Title           string    `json:"title"`
-	CompanyID       uuid.UUID `json:"company_id"`
+	CompanyID       *uuid.UUID `json:"company_id,omitempty"`
 	LocationID      uuid.UUID `json:"location_id"`
 	EmploymentTypeID uuid.UUID `json:"employment_type_id"`
 	WorkModeID      uuid.UUID `json:"work_mode_id"`

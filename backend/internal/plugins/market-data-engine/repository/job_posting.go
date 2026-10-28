@@ -155,8 +155,8 @@ func (r *JobPostingRepository) ListByJobIDWithStatus(ctx context.Context, jobID 
 		rows, err = r.db.Query(ctx, `
 			SELECT id, job_id, title, company_id, location_id, employment_type_id,
 			       work_mode_id, salary_min, salary_max, salary_currency, salary_period,
-			       description, apply_url, posted_at, expires_at, created_at, updated_at,
-			       matched_skills_count, total_skills_count, match_score, status
+		       description, apply_url, posted_at, expires_at, created_at, updated_at,
+		       matched_skills_count, total_skills_count, match_score, status
 			FROM job_postings
 			WHERE job_id = $1
 			ORDER BY posted_at DESC
@@ -165,8 +165,8 @@ func (r *JobPostingRepository) ListByJobIDWithStatus(ctx context.Context, jobID 
 		rows, err = r.db.Query(ctx, `
 			SELECT id, job_id, title, company_id, location_id, employment_type_id,
 			       work_mode_id, salary_min, salary_max, salary_currency, salary_period,
-			       description, apply_url, posted_at, expires_at, created_at, updated_at,
-			       matched_skills_count, total_skills_count, match_score, status
+		       description, apply_url, posted_at, expires_at, created_at, updated_at,
+		       matched_skills_count, total_skills_count, match_score, status
 			FROM job_postings
 			WHERE job_id = $1 AND status = $2
 			ORDER BY posted_at DESC

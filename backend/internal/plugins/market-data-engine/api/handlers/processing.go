@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"passo/backend/internal/plugins/market-data-engine/processing"
 	"log"
+	"passo/backend/internal/plugins/market-data-engine/processing"
 )
 
 // ProcessingHandler handles HTTP requests for market data engine processing
@@ -32,7 +32,7 @@ func NewProcessingHandler(workerPool *processing.WorkerPool) *ProcessingHandler 
 // @Router /api/v1/mde/process/start [post]
 func (h *ProcessingHandler) StartProcessing(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[INFO] HandleStartProcessing: received request")
-	if err := h.workerPool.Start(r.Context()); err != nil {
+	if err := h.workerPool.Start(); err != nil {
 		log.Printf("[ERROR] HandleStartProcessing: failed to start worker pool: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
